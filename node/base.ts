@@ -1,12 +1,9 @@
 import { parseArgs } from 'node:util'
-// import { readFile, writeFile } from 'node:fs/promises'
-import { Resolver } from 'node:dns/promises'
+import http from 'node:http'
 import https from 'node:https'
 import fs from 'fs/promises';
-// import type { } from 'node';
 
 import templateStr from '../substore/template.json' with { type: 'json' }
-// import yaml from 'js-yaml';
 
 // --- 工具函数 --- [[[1
 
@@ -2021,8 +2018,6 @@ export function convertOutboundsToLinks(outbounds) {
   return outbounds.map(outbound => convertOutboundToLink(outbound));
 }
 
-// --- 辅助函数 ---
-
 /**
  * 解析原始内容
  * @param {string} content - 内容
@@ -2037,6 +2032,127 @@ function parseRawContent(content) {
 }
 
 // --- 工具函数 --- ]]]1
+
+// --- 辅助函数 ---
+
+/**
+ * 判断输入是否为 HTTP/HTTPS URL
+ * @param {string} value - 输入字符串
+ * @returns {boolean} 是否为 HTTP/HTTPS URL
+ */
+function isHttpSubscriptionUrl(value) {
+  if (!value || typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 拉取订阅文本，支持 HTTP/HTTPS 与重定向
+ * @param {string} urlString - 订阅地址
+ * @param {number} redirectCount - 当前重定向次数
+ * @returns {Promise<string>} 原始响应文本
+ */
+async function fetchSubscriptionText(urlString, redirectCount = 0) {
+  if (redirectCount > 5) {
+    throw new Error('Too many redirects while fetching subscription');
+  }
+
+  const url = new URL(urlString);
+  const client = url.protocol === 'https:' ? https : http;
+  console.log(`[sbtpl] fetching ${url.protocol}//${url.host}${url.pathname}${url.search}${redirectCount ? ` (redirect ${redirectCount})` : ''}`);
+
+  return await new Promise((resolve, reject) => {
+    const req = client.request(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'substore-node/1.0',
+          Accept: '*/*',
+        },
+      },
+      async (res) => {
+        const statusCode = res.statusCode || 0;
+        console.log(`[sbtpl] response status: ${statusCode}`);
+
+        if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
+          const redirectUrl = new URL(res.headers.location, url).toString();
+          console.log(`[sbtpl] redirect -> ${redirectUrl}`);
+          res.resume();
+          try {
+            resolve(await fetchSubscriptionText(redirectUrl, redirectCount + 1));
+          } catch (e) {
+            reject(e);
+          }
+          return;
+        }
+
+        if (statusCode < 200 || statusCode >= 300) {
+          res.resume();
+          reject(new Error(`Failed to fetch subscription: HTTP ${statusCode}`));
+          return;
+        }
+
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          console.log(`[sbtpl] received ${text.length} chars`);
+          resolve(text);
+        });
+      },
+    );
+
+    req.on('error', (error) => {
+      console.error(`[sbtpl] request failed: ${error.message}`);
+      reject(error);
+    });
+    req.end();
+  });
+}
+
+/**
+ * 归一化订阅内容，兼容 Base64/plain text
+ * @param {string} rawText - 原始订阅响应
+ * @returns {string} 归一化后的订阅内容
+ */
+function normalizeSubscriptionContent(rawText) {
+  const trimmed = rawText.trim();
+  if (!trimmed) return '';
+
+  if (
+    trimmed.includes('://') ||
+    trimmed.includes('proxies:') ||
+    trimmed.includes('[Interface]') ||
+    trimmed.startsWith('{') ||
+    trimmed.startsWith('[')
+  ) {
+    console.log('[sbtpl] detected plain subscription content');
+    return trimmed;
+  }
+
+  const decoded = b64Decode(trimmed).trim();
+  if (
+    decoded &&
+    (
+      decoded.includes('://') ||
+      decoded.includes('proxies:') ||
+      decoded.includes('[Interface]') ||
+      decoded.startsWith('{') ||
+      decoded.startsWith('[')
+    )
+  ) {
+    console.log(`[sbtpl] detected base64 subscription content, decoded ${decoded.length} chars`);
+    return decoded;
+  }
+
+  console.log('[sbtpl] content format not recognized, using raw text');
+  return trimmed;
+}
 
 async function run() {
   const {
@@ -2062,14 +2178,21 @@ async function run() {
     process.exit(1)
   }
 
-  const nodes = await convertToOutbounds(subLink);
+  console.log(`[sbtpl] input mode: ${isHttpSubscriptionUrl(subLink) ? 'url' : 'raw'}`);
+  const subscriptionInput = isHttpSubscriptionUrl(subLink)
+    ? normalizeSubscriptionContent(await fetchSubscriptionText(subLink))
+    : normalizeSubscriptionContent(subLink);
+  console.log(`[sbtpl] normalized content length: ${subscriptionInput.length}`);
 
-  const tags = nodes?.map((i) => i.tag)
+  const nodes = await convertToOutbounds(subscriptionInput);
+  console.log(`[sbtpl] parsed ${nodes?.length || 0} outbounds`);
+
+  const tags = nodes?.map((i) => i.tag) || []
 
   const outbounds = [
     {
-      tag: 'direct',
-      type: '🎯Direct',
+      tag: "🎯Direct",
+      type: 'direct',
     },
     {
       tag: '🌐Proxy',
@@ -2091,7 +2214,6 @@ async function run() {
     },
     ...nodes,
   ]
-  // console.log(JSON.stringify(outbounds, null, 2));
 
   const json = JSON.stringify({
     ...((({ outbounds: _removed, ...rest }) => rest)(templateStr)), outbounds,
@@ -2099,7 +2221,7 @@ async function run() {
 
   if (outputFile) {
     await fs.writeFile(outputFile, json, 'utf-8');
-    console.log(`✅ Sing-box configuration saved to ${outputFile}`);
+    console.log(`[sbtpl] sing-box configuration saved to "${outputFile}"`);
   } else {
     console.log(json);
   }
