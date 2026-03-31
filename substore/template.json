@@ -13,7 +13,7 @@
       "external_controller": "[::]:9090",
       "external_ui": "ui",
       "external_ui_download_url": "https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip",
-      "external_ui_download_detour": "🌐Proxy"
+      "external_ui_download_detour": "🎯Direct"
     }
   },
   "dns": {
@@ -46,7 +46,7 @@
           },
           {
             "rule_set": [
-              "AdGuardSDNSFilter"
+              "geosite-category-ads-all"
             ]
           }
         ],
@@ -99,7 +99,14 @@
       "type": "selector",
       "outbounds": [
         "⚡UrlTest"
-      ]
+      ],
+      "interrupt_exist_connections": true
+    },
+    {
+      "tag": "🚀LowLatency",
+      "type": "selector",
+      "outbounds": [],
+      "interrupt_exist_connections": true
     },
     {
       "tag": "⚡UrlTest",
@@ -129,12 +136,21 @@
         "timeout": "200ms"
       },
       {
-        "protocol": "dns",
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "protocol": "dns"
+          },
+          {
+            "port": 53
+          }
+        ],
         "action": "hijack-dns"
       },
       {
-        "action": "resolve",
-        "strategy": "prefer_ipv4"
+        "strategy": "prefer_ipv4",
+        "action": "resolve"
       },
       {
         "source_ip_cidr": [
@@ -144,6 +160,23 @@
         "ip_cidr": [
           "224.0.0.0/3",
           "ff00::/8"
+        ],
+        "action": "reject"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "port": 853
+          },
+          {
+            "network": "udp",
+            "port": 443
+          },
+          {
+            "protocol": "quic"
+          }
         ],
         "action": "reject"
       },
@@ -174,21 +207,31 @@
       },
       {
         "ip_cidr": [
-          "45.221.114.55/32",
           "103.149.93.9/32"
         ],
         "outbound": "🎯Direct"
       },
       {
-        "rule_set": "hdy-domain",
-        "outbound": "🎯Direct"
+        "rule_set": [
+          "geosite-category-ai-!cn",
+          "geosite-jetbrains-ai"
+        ],
+        "outbound": "🌐Proxy"
       },
       {
-        "rule_set": "hdy-port",
-        "outbound": "🎯Direct"
+        "domain_suffix": [
+          "release-assets.githubusercontent.com",
+          "gstatic.com",
+          "googlevideo.com"
+        ],
+        "outbound": "🌐Proxy"
       },
       {
-        "rule_set": "hdy-pname",
+        "rule_set": [
+          "hdy-domain",
+          "hdy-port",
+          "hdy-pname"
+        ],
         "outbound": "🎯Direct"
       },
       {
@@ -202,24 +245,6 @@
         "rule_set": "geosite-category-ads-all",
         "clash_mode": "rule",
         "action": "reject"
-      },
-      {
-        "rule_set": "geosite-category-ads-all",
-        "clash_mode": "global",
-        "outbound": "🌐Proxy"
-      },
-      {
-        "rule_set": "geosite-openai",
-        "outbound": "🌐Proxy"
-      },
-      {
-        "rule_set": [
-          "geosite-youtube",
-          "geoip-google",
-          "geosite-google",
-          "geosite-github"
-        ],
-        "outbound": "🌐Proxy"
       },
       {
         "rule_set": [
@@ -245,6 +270,27 @@
       },
       {
         "rule_set": [
+          "geosite-youtube",
+          "geosite-hbo",
+          "geosite-primevideo"
+        ],
+        "outbound": "🌐Proxy"
+      },
+      {
+        "rule_set": [
+          "geoip-google",
+          "geosite-google"
+        ],
+        "outbound": "🌐Proxy"
+      },
+      {
+        "rule_set": [
+          "geosite-github"
+        ],
+        "outbound": "🌐Proxy"
+      },
+      {
+        "rule_set": [
           "geoip-apple",
           "geosite-apple",
           "geosite-amazon"
@@ -259,16 +305,10 @@
         "rule_set": [
           "geosite-steam",
           "geosite-category-games",
-          "geosite-dmm"
+          "geosite-dmm",
+          "game-download"
         ],
         "outbound": "🎯Direct"
-      },
-      {
-        "rule_set": [
-          "geosite-hbo",
-          "geosite-primevideo"
-        ],
-        "outbound": "🌐Proxy"
       },
       {
         "rule_set": "geosite-geolocation-!cn",
@@ -280,22 +320,15 @@
         "tag": "geoip-cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geoip/geoip-cn.srs",
-        "download_detour": "🌐Proxy"
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geoip/geoip-cn.srs",
+        "download_detour": "🎯Direct"
       },
       {
         "tag": "geosite-cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-cn.srs",
-        "download_detour": "🌐Proxy"
-      },
-      {
-        "tag": "AdGuardSDNSFilter",
-        "type": "remote",
-        "format": "binary",
-        "url": "https://raw.githubusercontent.com/xmdhs/sing-box-ruleset/rule-set/AdGuardSDNSFilterSingBox.srs",
-        "download_detour": "🌐Proxy"
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-cn.srs",
+        "download_detour": "🎯Direct"
       },
       {
         "tag": "geosite-category-ads-all",
@@ -305,10 +338,17 @@
         "download_detour": "🎯Direct"
       },
       {
-        "tag": "geosite-openai",
+        "tag": "geosite-category-ai-!cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://testingcf.jsdelivr.net/gh/Toperlock/sing-box-geosite@main/rule/OpenAI.srs",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-category-ai-!cn.srs",
+        "download_detour": "🎯Direct"
+      },
+      {
+        "tag": "geosite-jetbrains-ai",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-jetbrains-ai.srs",
         "download_detour": "🎯Direct"
       },
       {
@@ -449,6 +489,13 @@
         "type": "remote",
         "format": "binary",
         "url": "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-!cn.srs",
+        "download_detour": "🎯Direct"
+      },
+      {
+        "tag": "game-download",
+        "type": "remote",
+        "format": "source",
+        "url": "https://ruleset.skk.moe/sing-box/domainset/game-download.json",
         "download_detour": "🎯Direct"
       },
       {
