@@ -1,3 +1,4 @@
-node_modules
-package.json
-package-lock.json
+node/node_modules
+node/package.json
+node/package-lock.json
+*.json
