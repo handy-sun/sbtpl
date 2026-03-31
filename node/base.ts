@@ -2154,6 +2154,56 @@ function normalizeSubscriptionContent(rawText) {
   return trimmed;
 }
 
+/**
+ * 对字符串数组去重并过滤空值
+ * @param {string[]} values - 待处理字符串数组
+ * @returns {string[]} 去重后的字符串数组
+ */
+function uniqStrings(values) {
+  return [...new Set((values || []).filter((value) => typeof value === 'string' && value.trim()))];
+}
+
+/**
+ * 将解析出的节点注入模板配置中的 outbounds
+ * @param {object} template - 模板配置
+ * @param {object[]} nodes - 解析出的节点
+ * @returns {object} 新的配置对象
+ */
+function injectNodesIntoTemplate(template, nodes) {
+  const config = JSON.parse(JSON.stringify(template));
+  const baseOutbounds = Array.isArray(config.outbounds) ? config.outbounds : [];
+  const tags = uniqStrings(nodes.map((node) => node?.tag));
+
+  const proxySelector = baseOutbounds.find((outbound) => outbound?.tag === '🌐Proxy' && outbound?.type === 'selector');
+  if (proxySelector) {
+    proxySelector.outbounds = uniqStrings([
+      ...(Array.isArray(proxySelector.outbounds) ? proxySelector.outbounds : []),
+      '⚡UrlTest',
+      '🚀LowLatency',
+      ...tags,
+    ]);
+  }
+
+  const lowLatencySelector = baseOutbounds.find((outbound) => outbound?.tag === '🚀LowLatency' && outbound?.type === 'selector');
+  if (lowLatencySelector) {
+    lowLatencySelector.outbounds = uniqStrings([
+      ...(Array.isArray(lowLatencySelector.outbounds) ? lowLatencySelector.outbounds : []),
+      ...tags,
+    ]);
+  }
+
+  const urlTestSelector = baseOutbounds.find((outbound) => outbound?.tag === '⚡UrlTest' && outbound?.type === 'urltest');
+  if (urlTestSelector) {
+    urlTestSelector.outbounds = uniqStrings([
+      ...(Array.isArray(urlTestSelector.outbounds) ? urlTestSelector.outbounds : []),
+      ...tags,
+    ]);
+  }
+
+  config.outbounds = [...baseOutbounds, ...nodes];
+  return config;
+}
+
 async function run() {
   const {
     values: {
@@ -2186,38 +2236,10 @@ async function run() {
 
   const nodes = await convertToOutbounds(subscriptionInput);
   console.log(`[sbtpl] parsed ${nodes?.length || 0} outbounds`);
+  const config = injectNodesIntoTemplate(templateStr, nodes || []);
+  console.log(`[sbtpl] template outbounds total: ${config.outbounds?.length || 0}`);
 
-  const tags = nodes?.map((i) => i.tag) || []
-
-  const outbounds = [
-    {
-      tag: "🎯Direct",
-      type: 'direct',
-    },
-    {
-      tag: '🌐Proxy',
-      type: 'selector',
-      outbounds: [
-        '⚡UrlTest',
-        ...tags
-      ],
-      interrupt_exist_connections: true,
-    },
-    {
-      tag: '⚡UrlTest',
-      type: 'urltest',
-      outbounds: tags,
-      interval: '3m',
-      tolerance: 40,
-      url: 'http://www.gstatic.com/generate_204',
-      interrupt_exist_connections: true,
-    },
-    ...nodes,
-  ]
-
-  const json = JSON.stringify({
-    ...((({ outbounds: _removed, ...rest }) => rest)(templateStr)), outbounds,
-  }, null, 2);
+  const json = JSON.stringify(config, null, 2);
 
   if (outputFile) {
     await fs.writeFile(outputFile, json, 'utf-8');
