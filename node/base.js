@@ -1638,7 +1638,7 @@ function buildSingboxOutbound(bean, options) {
  * @param {object} options - 选项
  * @returns {object[]|undefined} Outbound 数组
  */
-export async function convertToOutbounds(input, options = {}) {
+async function convertToOutbounds(input, options = {}) {
   let beans = [];
 
   const lines = input.trim().split('\n');
@@ -1648,7 +1648,7 @@ export async function convertToOutbounds(input, options = {}) {
     const links = input.split(/[\n\s]+/).filter(Boolean);
     beans = links.map(parseLink).filter(Boolean);
   } else {
-    const beans = parseRawContent(input);
+    beans = parseRawContent(input);
   }
 
   const outbounds = [];
@@ -1993,7 +1993,7 @@ function parseSingboxOutbound(outbound) {
  * @param {object} outbound - Outbound 对象
  * @returns {string} 链接字符串
  */
-export function convertOutboundToLink(outbound) {
+function convertOutboundToLink(outbound) {
   try {
     const bean = parseSingboxOutbound(outbound);
     if (bean) {
@@ -2011,7 +2011,7 @@ export function convertOutboundToLink(outbound) {
  * @param {object[]} outbounds - Outbound 对象数组
  * @returns {string[]} 链接数组
  */
-export function convertOutboundsToLinks(outbounds) {
+function convertOutboundsToLinks(outbounds) {
   if (!Array.isArray(outbounds)) {
     throw new Error("Input must be an array of outbound objects.");
   }
@@ -2034,7 +2034,12 @@ function parseRawContent(content) {
 // --- 工具函数 --- ]]]1
 
 // --- 辅助函数 ---
-
+function sbtplLog(v) {
+  console.log(`[sbtpl] ${v}`)
+}
+function sbtplErr(v) {
+  console.error(`[sbtpl.Error] ${v}`)
+}
 /**
  * 判断输入是否为 HTTP/HTTPS URL
  * @param {string} value - 输入字符串
@@ -2063,7 +2068,7 @@ async function fetchSubscriptionText(urlString, redirectCount = 0) {
 
   const url = new URL(urlString);
   const client = url.protocol === 'https:' ? https : http;
-  console.log(`[sbtpl] fetching ${url.protocol}//${url.host}${url.pathname}${url.search}${redirectCount ? ` (redirect ${redirectCount})` : ''}`);
+  sbtplLog(`fetching ${url.protocol}//${url.host}${url.pathname}${url.search}${redirectCount ? ` (redirect ${redirectCount})` : ''}`);
 
   return await new Promise((resolve, reject) => {
     const req = client.request(
@@ -2077,11 +2082,11 @@ async function fetchSubscriptionText(urlString, redirectCount = 0) {
       },
       async (res) => {
         const statusCode = res.statusCode || 0;
-        console.log(`[sbtpl] response status: ${statusCode}`);
+        sbtplLog(`response status: ${statusCode}`);
 
         if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
           const redirectUrl = new URL(res.headers.location, url).toString();
-          console.log(`[sbtpl] redirect -> ${redirectUrl}`);
+          sbtplLog(`redirect -> ${redirectUrl}`);
           res.resume();
           try {
             resolve(await fetchSubscriptionText(redirectUrl, redirectCount + 1));
@@ -2101,14 +2106,14 @@ async function fetchSubscriptionText(urlString, redirectCount = 0) {
         res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
         res.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
-          console.log(`[sbtpl] received ${text.length} chars`);
+          sbtplLog(`received ${text.length} chars`);
           resolve(text);
         });
       },
     );
 
     req.on('error', (error) => {
-      console.error(`[sbtpl] request failed: ${error.message}`);
+      sbtplErr(`request failed: ${error.message}`);
       reject(error);
     });
     req.end();
@@ -2124,21 +2129,8 @@ function normalizeSubscriptionContent(rawText) {
   const trimmed = rawText.trim();
   if (!trimmed) return '';
 
-  if (
-    trimmed.includes('://') ||
-    trimmed.includes('proxies:') ||
-    trimmed.includes('[Interface]') ||
-    trimmed.startsWith('{') ||
-    trimmed.startsWith('[')
-  ) {
-    console.log('[sbtpl] detected plain subscription content');
-    return trimmed;
-  }
-
   const decoded = b64Decode(trimmed).trim();
-  if (
-    decoded &&
-    (
+  if (decoded && (
       decoded.includes('://') ||
       decoded.includes('proxies:') ||
       decoded.includes('[Interface]') ||
@@ -2146,11 +2138,10 @@ function normalizeSubscriptionContent(rawText) {
       decoded.startsWith('[')
     )
   ) {
-    console.log(`[sbtpl] detected base64 subscription content, decoded ${decoded.length} chars`);
+    sbtplLog(`detected base64 subscription content, decoded ${decoded.length} chars`);
     return decoded;
   }
-
-  console.log('[sbtpl] content format not recognized, using raw text');
+  sbtplLog('content format not recognized, using raw text');
   return trimmed;
 }
 
@@ -2159,48 +2150,76 @@ function normalizeSubscriptionContent(rawText) {
  * @param {string[]} values - 待处理字符串数组
  * @returns {string[]} 去重后的字符串数组
  */
-function uniqStrings(values) {
-  return [...new Set((values || []).filter((value) => typeof value === 'string' && value.trim()))];
+// function uniqStrings(values) {
+//   return [...new Set((values || []).filter((value) => typeof value === 'string' && value.trim()))];
+// }
+function getTags(proxies, regex) {
+  return (regex ? proxies.filter(p => regex.test(p.tag)) : proxies).map(p => p.tag)
 }
-
+function convert2RegExp(rulePattern) {
+  return new RegExp(rulePattern.replace('～', ''), rulePattern.includes('～') ? 'i' : undefined)
+}
 /**
  * 将解析出的节点注入模板配置中的 outbounds
  * @param {object} template - 模板配置
- * @param {object[]} nodes - 解析出的节点
+ * @param {object[]} proxies - 解析出的节点
  * @returns {object} 新的配置对象
  */
-function injectNodesIntoTemplate(template, nodes) {
+function injectNodesIntoTemplate(template, proxies, policyFilter) {
+  const compatible_outbound = {
+    tag: 'COMPATIBLE',
+    type: 'direct',
+  }
   const config = JSON.parse(JSON.stringify(template));
   const baseOutbounds = Array.isArray(config.outbounds) ? config.outbounds : [];
-  const tags = uniqStrings(nodes.map((node) => node?.tag));
+  // const tags = uniqStrings(proxies.map((node) => node?.tag));
 
-  const proxySelector = baseOutbounds.find((outbound) => outbound?.tag === '🌐Proxy' && outbound?.type === 'selector');
-  if (proxySelector) {
-    proxySelector.outbounds = uniqStrings([
-      ...(Array.isArray(proxySelector.outbounds) ? proxySelector.outbounds : []),
-      '⚡UrlTest',
-      '🚀LowLatency',
-      ...tags,
-    ]);
-  }
+  const filterRules = policyFilter
+    .split('@')
+    .filter(i => i)
+    .map(i => {
+      let [filterPattern, tagPattern = '.*'] = i.split('-')
+      const tagRegex = convert2RegExp(tagPattern)
+      sbtplLog(`匹配 - ${tagRegex} 的节点将插入匹配 🌀 ${convert2RegExp(filterPattern)} 的 outbound 中`)
+      return [filterPattern, tagRegex]
+    })
 
-  const lowLatencySelector = baseOutbounds.find((outbound) => outbound?.tag === '🚀LowLatency' && outbound?.type === 'selector');
-  if (lowLatencySelector) {
-    lowLatencySelector.outbounds = uniqStrings([
-      ...(Array.isArray(lowLatencySelector.outbounds) ? lowLatencySelector.outbounds : []),
-      ...tags,
-    ]);
-  }
+  sbtplLog(`⓸ outbound 插入节点`)
+  baseOutbounds.map(outboundItem => {
+    filterRules.map(([filterPattern, tagRegex]) => {
+      const outboundRegex = convert2RegExp(filterPattern)
+      if (outboundRegex.test(outboundItem.tag)) {
+        if (!Array.isArray(outboundItem.outbounds)) {
+          outboundItem.outbounds = []
+        }
+        const tags = getTags(proxies, tagRegex)
+        sbtplLog(`📝 ${outboundItem.tag} 匹配 ${outboundRegex}, 插入 ${tags.length} 个 - 匹配 ${tagRegex} 的节点`)
+        outboundItem.outbounds.push(...tags)
+      }
+    })
+  })
 
-  const urlTestSelector = baseOutbounds.find((outbound) => outbound?.tag === '⚡UrlTest' && outbound?.type === 'urltest');
-  if (urlTestSelector) {
-    urlTestSelector.outbounds = uniqStrings([
-      ...(Array.isArray(urlTestSelector.outbounds) ? urlTestSelector.outbounds : []),
-      ...tags,
-    ]);
-  }
+  let compatible
+  sbtplLog(`⓹ 空 outbounds 检查`)
+  baseOutbounds.map(outboundItem => {
+    filterRules.map(() => {
+      if (outboundItem.type.toLowerCase() !== "direct") {
+        if (!Array.isArray(outboundItem.outbounds)) {
+          outboundItem.outbounds = []
+        }
+        if (outboundItem.outbounds.length === 0) {
+          if (!compatible) {
+            baseOutbounds.push(compatible_outbound)
+            compatible = true
+          }
+          sbtplLog(`📝 ${outboundItem.tag} 的 outbounds 为空, 自动插入 COMPATIBLE(direct)`)
+          outboundItem.outbounds.push(compatible_outbound.tag)
+        }
+      }
+    })
+  })
 
-  config.outbounds = [...baseOutbounds, ...nodes];
+  config.outbounds = [...baseOutbounds, ...proxies];
   return config;
 }
 
@@ -2209,6 +2228,7 @@ async function run() {
     values: {
       'subscribe-link': subLink,
       'output-file': outputFile,
+      'policy-filter': policyFilter,
     },
   } = parseArgs({
     args: process.argv.slice(2),
@@ -2221,6 +2241,10 @@ async function run() {
         type: 'string',
         short: 'o',
       },
+      'policy-filter': {
+        type: 'string',
+        short: 'p',
+      }
     },
   })
 
@@ -2228,22 +2252,36 @@ async function run() {
     process.exit(1)
   }
 
-  console.log(`[sbtpl] input mode: ${isHttpSubscriptionUrl(subLink) ? 'url' : 'raw'}`);
-  const subscriptionInput = isHttpSubscriptionUrl(subLink)
-    ? normalizeSubscriptionContent(await fetchSubscriptionText(subLink))
-    : normalizeSubscriptionContent(subLink);
-  console.log(`[sbtpl] normalized content length: ${subscriptionInput.length}`);
+  // handle many sub (split by '\n' or ';')
+  const subLinks = subLink
+    .split(/[\n;]+/)
+    .map(link => link.trim())
+    .filter(link => link.length > 0);
 
-  const nodes = await convertToOutbounds(subscriptionInput);
-  console.log(`[sbtpl] parsed ${nodes?.length || 0} outbounds`);
-  const config = injectNodesIntoTemplate(templateStr, nodes || []);
-  console.log(`[sbtpl] template outbounds total: ${config.outbounds?.length || 0}`);
+  sbtplLog(`processing ${subLinks.length} subscription link(s)`);
+
+  // merge all sub contents
+  let combinedInput = '';
+
+  for (const subLink of subLinks) {
+    sbtplLog(`input mode: ${isHttpSubscriptionUrl(subLink) ? 'url' : 'raw'} - ${subLink.substring(0, 50)}${subLink.length > 50 ? '...' : ''}`);
+    const subscriptionInput = isHttpSubscriptionUrl(subLink)
+      ? normalizeSubscriptionContent(await fetchSubscriptionText(subLink))
+      : normalizeSubscriptionContent(subLink);
+    sbtplLog(`normalized content length: ${subscriptionInput.length}`);
+    combinedInput += subscriptionInput + '\n';
+  }
+
+  const proxies = await convertToOutbounds(combinedInput.trim());
+  sbtplLog(`parsed ${proxies?.length || 0} outbounds`);
+
+  const config = injectNodesIntoTemplate(templateStr, proxies || [], policyFilter);
 
   const json = JSON.stringify(config, null, 2);
 
   if (outputFile) {
     await fs.writeFile(outputFile, json, 'utf-8');
-    console.log(`[sbtpl] sing-box configuration saved to "${outputFile}"`);
+    sbtplLog(`sing-box configuration saved to "${outputFile}"`);
   } else {
     console.log(json);
   }
