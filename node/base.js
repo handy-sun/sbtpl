@@ -2157,7 +2157,106 @@ function getTags(proxies, regex) {
   return (regex ? proxies.filter(p => regex.test(p.tag)) : proxies).map(p => p.tag)
 }
 function convert2RegExp(rulePattern) {
-  return new RegExp(rulePattern.replace('～', ''), rulePattern.includes('～') ? 'i' : undefined)
+  return new RegExp(rulePattern.replace('~', ''), rulePattern.includes('~') ? 'i' : undefined)
+}
+function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp) {
+  const default_mixport = 2334
+  const default_ctrlapi = 9090
+
+  const tun_tag = 'tun-in'
+  const tun_inbound = {
+    type: 'tun',
+    tag: tun_tag,
+    address: [ '172.19.0.1/30', 'fdfe:dcba:9876::1/126' ],
+    mtu: 9000,
+    auto_route: true,
+    strict_route: true,
+  }
+  const route_exclude_address = [
+    '10.0.0.0/8',
+    '100.64.0.0/10',
+    '127.0.0.0/8',
+    '169.254.0.0/16',
+    '172.16.0.0/12',
+    '192.0.0.0/24',
+    '192.168.0.0/16',
+    '224.0.0.0/4',
+    '240.0.0.0/4',
+    '255.255.255.255/32',
+    'fe80::/10',
+    'fc00::/7',
+    'ff01::/16',
+    'ff02::/16',
+    'ff03::/16',
+    'ff04::/16',
+    'ff05::/16',
+    '240e::/20'
+  ]
+
+  let config = temp;
+
+  const finCtrlapi = ctrlapi ? ctrlapi : (isTunEnabled ? 8790 : default_ctrlapi)
+  sbtplLog(`最终 ctrlapi=${finCtrlapi}`)
+  if (finCtrlapi != default_ctrlapi) {
+    config.experimental.clash_api.external_controller = `[::]:${finCtrlapi}`
+    sbtplLog(`📝 更新 experimental.clash_api.external_controller: ${config.experimental.clash_api.external_controller}`)
+  }
+
+  const finMixport = mixport ? mixport : (isTunEnabled ? 2134 : default_mixport)
+  sbtplLog(`最终 mixport=${finMixport}`)
+  if (finMixport != default_mixport) {
+    config.inbounds[0].listen_port = finMixport // WARN: HardCode! 默认第一个入站是 mix入站(如果不是需要手动调整代码)
+    sbtplLog(`📝 更新 inbounds[0](即 Mix入站).listen_port: ${JSON.stringify(config.inbounds[0])}`)
+  }
+
+  if (isTunEnabled) {
+    sbtplLog(`tun 入站使用`)
+    if (config.route.rules[0]?.action === 'sniff') { // 默认开头一个规则是sniff的, 这里添加它的 inbound 为 tun_tag
+      if (isAndroid) {
+        config.inbounds.push(tun_inbound)
+        sbtplLog(`使用了Android版的tun(无route_exclude_address)`)
+      } else {
+        tun_inbound.route_exclude_address = route_exclude_address
+        sbtplLog(`📝 开启了 tun 的 route_exclude_address 功能`)
+        if (isLinux) {
+          const linux_tun_inbound = tun_inbound
+          linux_tun_inbound.auto_redirect = true
+          sbtplLog(`📝 开启了 tun 的 auto_redirect(仅Linux支持) 功能`)
+          config.inbounds.push(linux_tun_inbound)
+        } else  {
+          config.inbounds.push(tun_inbound)
+        }
+      }
+      config.route.rules[0].inbound = tun_tag
+      sbtplLog(`📝 更新 route.rules[0]: ${JSON.stringify(config.route.rules[0])}`)
+    }
+  }
+
+  if (isIcmp) {
+    sbtplLog(`icmp 透传: (sing-box version>=1.13.0)`)
+    config.route.rules.unshift({
+      network: 'icmp',
+      outbound: '🎯Direct',
+    })
+    sbtplLog(`📝 头部插入了icmp直连, 当前route.rules[0]: ${JSON.stringify(config.route.rules[0])}`)
+  }
+
+  if (isAndroid) {
+    config.route.override_android_vpn = true
+    sbtplLog(`📝 开启了仅android支持的 route.override_android_vpn 功能`)
+  }
+
+  if (logFilePath != undefined) {
+    let trimStr = logFilePath.trim()
+    if (trimStr === "") {
+      delete config.log.output
+      sbtplLog(`📝 删除了log.output`)
+    } else {
+      config.log.output = trimStr
+      sbtplLog(`📝 修改了log.output: ${config.log.output}`)
+    }
+  }
+  return config;
 }
 /**
  * 将解析出的节点注入模板配置中的 outbounds
@@ -2165,7 +2264,7 @@ function convert2RegExp(rulePattern) {
  * @param {object[]} proxies - 解析出的节点
  * @returns {object} 新的配置对象
  */
-function injectNodesIntoTemplate(template, proxies, policyFilter) {
+function insertProxies(template, proxies, policyFilter) {
   const compatible_outbound = {
     tag: 'COMPATIBLE',
     type: 'direct',
@@ -2229,6 +2328,13 @@ async function run() {
       'subscribe-link': subLink,
       'output-file': outputFile,
       'policy-filter': policyFilter,
+      'tun': isTunEnabled,
+      'controller-port': ctrlapi,
+      'mixed-port': mixport,
+      'log-file': logFilePath,
+      'android': isAndroid,
+      'linux': isLinux,
+      'icmp': isIcmp,
     },
   } = parseArgs({
     args: process.argv.slice(2),
@@ -2244,7 +2350,38 @@ async function run() {
       'policy-filter': {
         type: 'string',
         short: 'p',
-      }
+      },
+      'tun': {
+        type: 'boolean',
+        short: 't',
+        default: false,
+      },
+      'controller-port': {
+        type: 'string',
+        short: 'c',
+        default: '',
+      },
+      'mixed-port': {
+        type: 'string',
+        short: 'm',
+        default: '',
+      },
+      'log-file': {
+        type: 'string',
+        short: 'l',
+      },
+      'android': {
+        type: 'boolean',
+        default: false,
+      },
+      'linux': {
+        type: 'boolean',
+        default: false,
+      },
+      'icmp': {
+        type: 'boolean',
+        default: false,
+      },
     },
   })
 
@@ -2275,7 +2412,9 @@ async function run() {
   const proxies = await convertToOutbounds(combinedInput.trim());
   sbtplLog(`parsed ${proxies?.length || 0} outbounds`);
 
-  const config = injectNodesIntoTemplate(templateStr, proxies || [], policyFilter);
+  const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp);
+
+  const config = insertProxies(confNew, proxies || [], policyFilter);
 
   const json = JSON.stringify(config, null, 2);
 
@@ -2283,6 +2422,7 @@ async function run() {
     await fs.writeFile(outputFile, json, 'utf-8');
     sbtplLog(`sing-box configuration saved to "${outputFile}"`);
   } else {
+    console.log('\n');
     console.log(json);
   }
 }

@@ -258,7 +258,7 @@ function log(v) {
   console.log(`[sing-box 📦] ${v}`)
 }
 function convert2RegExp(rulePattern) {
-  return new RegExp(rulePattern.replace('～', ''), rulePattern.includes('～') ? 'i' : undefined)
+  return new RegExp(rulePattern.replace('~', ''), rulePattern.includes('~') ? 'i' : undefined)
 }
 // 检查规则是否包含指定内容
 function ruleContains(rule, matchRegex) {
