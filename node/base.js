@@ -2195,14 +2195,14 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
 
   let config = temp;
 
-  const finCtrlapi = ctrlapi ? ctrlapi : (isTunEnabled ? 8790 : default_ctrlapi)
+  const finCtrlapi = ctrlapi ? parseInt(ctrlapi, 10) : (isTunEnabled ? 8790 : default_ctrlapi)
   sbtplLog(`最终 ctrlapi=${finCtrlapi}`)
   if (finCtrlapi != default_ctrlapi) {
     config.experimental.clash_api.external_controller = `[::]:${finCtrlapi}`
     sbtplLog(`📝 更新 experimental.clash_api.external_controller: ${config.experimental.clash_api.external_controller}`)
   }
 
-  const finMixport = mixport ? mixport : (isTunEnabled ? 2134 : default_mixport)
+  const finMixport = mixport ? parseInt(mixport, 10) : (isTunEnabled ? 2134 : default_mixport)
   sbtplLog(`最终 mixport=${finMixport}`)
   if (finMixport != default_mixport) {
     config.inbounds[0].listen_port = finMixport // WARN: HardCode! 默认第一个入站是 mix入站(如果不是需要手动调整代码)
@@ -2248,7 +2248,7 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
 
   if (logFilePath != undefined) {
     let trimStr = logFilePath.trim()
-    if (trimStr === "") {
+    if (trimStr === '') {
       delete config.log.output
       sbtplLog(`📝 删除了log.output`)
     } else {
@@ -2265,13 +2265,8 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
  * @returns {object} 新的配置对象
  */
 function insertProxies(template, proxies, policyFilter) {
-  const compatible_outbound = {
-    tag: 'COMPATIBLE',
-    type: 'direct',
-  }
   const config = JSON.parse(JSON.stringify(template));
   const baseOutbounds = Array.isArray(config.outbounds) ? config.outbounds : [];
-  // const tags = uniqStrings(proxies.map((node) => node?.tag));
 
   const filterRules = policyFilter
     .split('@')
@@ -2298,21 +2293,16 @@ function insertProxies(template, proxies, policyFilter) {
     })
   })
 
-  let compatible
   sbtplLog(`⓹ 空 outbounds 检查`)
   baseOutbounds.map(outboundItem => {
     filterRules.map(() => {
-      if (outboundItem.type.toLowerCase() !== "direct") {
+      if (outboundItem.type.toLowerCase() !== 'direct') {
         if (!Array.isArray(outboundItem.outbounds)) {
           outboundItem.outbounds = []
         }
         if (outboundItem.outbounds.length === 0) {
-          if (!compatible) {
-            baseOutbounds.push(compatible_outbound)
-            compatible = true
-          }
-          sbtplLog(`📝 ${outboundItem.tag} 的 outbounds 为空, 自动插入 COMPATIBLE(direct)`)
-          outboundItem.outbounds.push(compatible_outbound.tag)
+          sbtplLog(`📝 ${outboundItem.tag} 的 outbounds 为空, 自动插入🌐Proxy`)
+          outboundItem.outbounds.push('🌐Proxy')
         }
       }
     })
@@ -2420,7 +2410,7 @@ async function run() {
 
   if (outputFile) {
     await fs.writeFile(outputFile, json, 'utf-8');
-    sbtplLog(`sing-box configuration saved to "${outputFile}"`);
+    sbtplLog(`sing-box configuration saved to '${outputFile}'`);
   } else {
     console.log('\n');
     console.log(json);

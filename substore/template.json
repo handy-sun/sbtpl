@@ -101,6 +101,12 @@
       "interrupt_exist_connections": true
     },
     {
+      "tag": "💬AI",
+      "type": "selector",
+      "outbounds": [],
+      "interrupt_exist_connections": true
+    },
+    {
       "tag": "🚀LowLatency",
       "type": "selector",
       "outbounds": [],
@@ -206,7 +212,7 @@
           "geosite-category-ai-!cn",
           "geosite-jetbrains-ai"
         ],
-        "outbound": "🌐Proxy"
+        "outbound": "💬AI"
       },
       {
         "domain_suffix": [
@@ -271,13 +277,13 @@
           "geoip-google",
           "geosite-google"
         ],
-        "outbound": "🌐Proxy"
+        "outbound": "💬AI"
       },
       {
         "rule_set": [
           "geosite-github"
         ],
-        "outbound": "🌐Proxy"
+        "outbound": "🚀LowLatency"
       },
       {
         "rule_set": [
