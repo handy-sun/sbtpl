@@ -1,8 +1,8 @@
 {
   "log": {
     "level": "info",
-    "timestamp": true,
-    "output": "box.log"
+    "output": "box.log",
+    "timestamp": true
   },
   "experimental": {
     "cache_file": {
@@ -10,6 +10,7 @@
     },
     "clash_api": {
       "external_controller": "[::]:9090",
+      "external_ui": "ui",
       "external_ui_download_url": "https://gh-proxy.com/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip",
       "external_ui_download_detour": "🎯Direct"
     }
