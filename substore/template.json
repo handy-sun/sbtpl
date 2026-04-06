@@ -41,7 +41,10 @@
         "mode": "or",
         "rules": [
           {
-            "query_type": "HTTPS"
+            "query_type": [
+              "HTTPS",
+              "SVCB"
+            ]
           },
           {
             "rule_set": [
@@ -60,7 +63,7 @@
         "rewrite_ttl": 1
       },
       {
-        "clash_mode": "global",
+        "clash_mode": "Global",
         "server": "dns_proxy"
       },
       {
@@ -68,7 +71,7 @@
         "mode": "or",
         "rules": [
           {
-            "clash_mode": "direct"
+            "clash_mode": "Direct"
           },
           {
             "rule_set": "geosite-cn"
@@ -173,9 +176,6 @@
           {
             "network": "udp",
             "port": 443
-          },
-          {
-            "protocol": "quic"
           }
         ],
         "action": "reject"
@@ -189,7 +189,7 @@
         "outbound": "🎯Direct"
       },
       {
-        "clash_mode": "global",
+        "clash_mode": "Global",
         "outbound": "🌐Proxy"
       },
       {
@@ -197,7 +197,7 @@
         "mode": "or",
         "rules": [
           {
-            "clash_mode": "direct"
+            "clash_mode": "Direct"
           },
           {
             "ip_is_private": true
@@ -243,7 +243,7 @@
       },
       {
         "rule_set": "geosite-category-ads-all",
-        "clash_mode": "rule",
+        "clash_mode": "Rule",
         "action": "reject"
       },
       {

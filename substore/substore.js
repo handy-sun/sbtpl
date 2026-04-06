@@ -224,7 +224,6 @@ config.outbounds.map(outboundItem => {
   })
 })
 
-let compatible
 log(`⓹ 空 outbounds 检查`)
 config.outbounds.map(outboundItem => {
   outboundRules.map(([outboundPattern, tagRegex]) => {
@@ -233,12 +232,8 @@ config.outbounds.map(outboundItem => {
         outboundItem.outbounds = []
       }
       if (outboundItem.outbounds.length === 0) {
-        if (!compatible) {
-          config.outbounds.push(compatible_outbound)
-          compatible = true
-        }
-        log(`📝 ${outboundItem.tag} 的 outbounds 为空, 自动插入 COMPATIBLE(direct)`)
-        outboundItem.outbounds.push(compatible_outbound.tag)
+        log(`📝 ${outboundItem.tag} 的 outbounds 为空, 自动插入 🌐Proxy`)
+        outboundItem.outbounds.push('🌐Proxy')
       }
     }
   })
