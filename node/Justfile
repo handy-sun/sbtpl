@@ -1,0 +1,45 @@
+# alias g := generate
+
+set shell := ["bash", "-uc"]
+
+subLine := "http://handy:3001/c53248f264d9997/download/collection/main?target=URI"
+
+policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
+
+alias b := tun
+
+default:
+  @just --list
+
+clean:
+  rm -f ./*.json
+
+run:
+  sing-box run -c /opt/sing-box/config.json -D /opt/sing-box/var
+
+tun:
+  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp -o config.json
+
+singb:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --log-file '' --icmp -o singb.json
+
+notun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp -o inotun.json
+
+imx-notun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp --mixed-port 2134 -o imx-notun.json
+
+nout-itun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --icmp --log-file '' -o nout-itun.json
+
+icmp-tun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --icmp -o icmp-tun.json
+
+linux-tun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --linux -o linux-tun.json
+
+android-tun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --android -o android-tun.json
+
+android:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --android -o android.json

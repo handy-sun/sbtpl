@@ -11,7 +11,7 @@
     "clash_api": {
       "external_controller": "[::]:9090",
       "external_ui": "ui",
-      "external_ui_download_url": "https://ghfast.top/https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip",
+      "external_ui_download_url": "https://codeberg.org/handy/proxyconfig/releases/download/v0.2.0/dist.zip",
       "external_ui_download_detour": "🎯Direct"
     }
   },
@@ -214,7 +214,8 @@
       {
         "rule_set": [
           "geosite-category-ai-!cn",
-          "geosite-jetbrains-ai"
+          "geosite-jetbrains-ai",
+          "claude"
         ],
         "outbound": "💬AI"
       },
@@ -517,6 +518,13 @@
         "type": "remote",
         "format": "source",
         "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/direct/pname.json",
+        "download_detour": "🎯Direct"
+      },
+      {
+        "tag": "claude",
+        "type": "remote",
+        "format": "source",
+        "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/proxy/claude.json",
         "download_detour": "🎯Direct"
       }
     ]
