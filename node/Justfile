@@ -20,6 +20,9 @@ run:
 tun:
   node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp -o config.json
 
+windows-tun:
+  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp --windows --log-file '' -o windows-tun.json
+
 singb:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --log-file '' --icmp -o singb.json
 

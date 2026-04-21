@@ -2131,12 +2131,12 @@ function normalizeSubscriptionContent(rawText) {
 
   const decoded = b64Decode(trimmed).trim();
   if (decoded && (
-      decoded.includes('://') ||
-      decoded.includes('proxies:') ||
-      decoded.includes('[Interface]') ||
-      decoded.startsWith('{') ||
-      decoded.startsWith('[')
-    )
+    decoded.includes('://') ||
+    decoded.includes('proxies:') ||
+    decoded.includes('[Interface]') ||
+    decoded.startsWith('{') ||
+    decoded.startsWith('[')
+  )
   ) {
     sbtplLog(`detected base64 subscription content, decoded ${decoded.length} chars`);
     return decoded;
@@ -2159,7 +2159,7 @@ function getTags(proxies, regex) {
 function convert2RegExp(rulePattern) {
   return new RegExp(rulePattern.replace('~', ''), rulePattern.includes('~') ? 'i' : undefined)
 }
-function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp) {
+function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows) {
   const default_mixport = 2334
   const default_ctrlapi = 9090
 
@@ -2167,7 +2167,7 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
   const tun_inbound = {
     type: 'tun',
     tag: tun_tag,
-    address: [ '172.19.0.1/30', 'fdfe:dcba:9876::1/126' ],
+    address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
     mtu: 9000,
     auto_route: true,
     strict_route: true,
@@ -2223,7 +2223,12 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
           linux_tun_inbound.auto_redirect = true
           sbtplLog(`📝 开启了 tun 的 auto_redirect(仅Linux支持) 功能`)
           config.inbounds.push(linux_tun_inbound)
-        } else  {
+        } else if (IsWindows) {
+          tun_inbound.stack = 'gvisor'
+          tun_inbound.mtu = 1500
+          sbtplLog(`📝 开启了 windows 的 gVisor 栈功能`)
+          config.inbounds.push(tun_inbound)
+        } else {
           config.inbounds.push(tun_inbound)
         }
       }
@@ -2325,6 +2330,7 @@ async function run() {
       'android': isAndroid,
       'linux': isLinux,
       'icmp': isIcmp,
+      'windows': IsWindows,
     },
   } = parseArgs({
     args: process.argv.slice(2),
@@ -2372,6 +2378,10 @@ async function run() {
         type: 'boolean',
         default: false,
       },
+      'windows': {
+        type: 'boolean',
+        default: false,
+      },
     },
   })
 
@@ -2402,7 +2412,7 @@ async function run() {
   const proxies = await convertToOutbounds(combinedInput.trim());
   sbtplLog(`parsed ${proxies?.length || 0} outbounds`);
 
-  const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp);
+  const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows);
 
   const config = insertProxies(confNew, proxies || [], policyFilter);
 
