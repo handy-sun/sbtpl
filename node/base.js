@@ -774,6 +774,69 @@ class SSHBean extends AbstractBean {
   }
 }
 
+/**
+ * AnyTLS Bean 类
+ *
+ * 基于 TLS 的密码认证代理协议(sing-box >= 1.12 原生支持).
+ * 典型 URI 形式:
+ *   anytls://<password>@<host>:<port>?sni=&insecure=1&alpn=&fp=...#<name>
+ */
+class AnyTLSBean extends AbstractBean {
+  constructor() {
+    super();
+    this.password = "";
+    this.sni = "";
+    this.alpn = "";
+    this.allowInsecure = false;
+    this.utlsFingerprint = "";
+    this.certificates = "";
+    this.enableECH = false;
+    this.echConfig = "";
+    this.idleSessionCheckInterval = "";
+    this.idleSessionTimeout = "";
+    this.minIdleSession = 0;
+  }
+
+  /**
+   * 初始化默认值
+   */
+  initializeDefaultValues() {
+    if (this.serverPort == null || this.serverPort === 1080) this.serverPort = 443;
+    super.initializeDefaultValues();
+    if (!this.password) this.password = "";
+    if (!this.sni) this.sni = "";
+    if (!this.alpn) this.alpn = "";
+    if (this.allowInsecure == null) this.allowInsecure = false;
+    if (!this.utlsFingerprint) this.utlsFingerprint = "";
+    if (!this.certificates) this.certificates = "";
+    if (this.enableECH == null) this.enableECH = false;
+    if (!this.echConfig) this.echConfig = "";
+    if (!this.idleSessionCheckInterval) this.idleSessionCheckInterval = "";
+    if (!this.idleSessionTimeout) this.idleSessionTimeout = "";
+    if (this.minIdleSession == null) this.minIdleSession = 0;
+  }
+
+  /**
+   * 转换为 URI
+   * @returns {string} URI 字符串
+   */
+  toUri() {
+    let link = `anytls://${encodeURIComponent(this.password)}@${this.serverAddress}:${this.serverPort}`;
+    const params = new URLSearchParams();
+    if (this.sni) params.set('sni', this.sni);
+    if (this.alpn) params.set('alpn', this.alpn);
+    if (this.allowInsecure) params.set('insecure', '1');
+    if (this.utlsFingerprint) params.set('fp', this.utlsFingerprint);
+    if (this.idleSessionCheckInterval) params.set('idle-session-check-interval', this.idleSessionCheckInterval);
+    if (this.idleSessionTimeout) params.set('idle-session-timeout', this.idleSessionTimeout);
+    if (this.minIdleSession > 0) params.set('min-idle-session', String(this.minIdleSession));
+    const queryString = params.toString();
+    if (queryString) link += `?${queryString}`;
+    if (this.name) link += `#${encodeURIComponent(this.name)}`;
+    return link;
+  }
+}
+
 // --- 链接解析函数 ---
 
 /**
@@ -1141,6 +1204,61 @@ function parseSSH(link) {
 }
 
 /**
+ * 解析 AnyTLS 链接
+ *
+ * 兼容:
+ *   - userinfo 形式: anytls://pwd@host:port
+ *   - user:pass 形式: anytls://user:pass@host:port (合并为 user:pass 作为 password)
+ *   - 查询参数下划线或连字符混用
+ *
+ * @param {string} link - 链接
+ * @returns {AnyTLSBean} Bean 对象
+ */
+function parseAnyTLS(link) {
+  const bean = new AnyTLSBean();
+  const url = new URL(link.replace('anytls://', 'https://'));
+
+  bean.name = url.hash ? decodeURIComponent(url.hash.substring(1)) : '';
+  bean.serverAddress = url.hostname;
+  bean.serverPort = parseInt(url.port, 10) || 443;
+
+  if (url.password) {
+    bean.password = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+  } else {
+    bean.password = decodeURIComponent(url.username);
+  }
+
+  const getParam = (...keys) => {
+    for (const k of keys) {
+      const v = url.searchParams.get(k);
+      if (v != null && v !== '') return v;
+    }
+    return '';
+  };
+  const getBoolParam = (...keys) => {
+    const v = getParam(...keys);
+    return v === '1' || v.toLowerCase() === 'true';
+  };
+
+  bean.sni = getParam('sni', 'peer', 'host', 'servername');
+  bean.alpn = getParam('alpn');
+  bean.allowInsecure = getBoolParam('insecure', 'allow_insecure', 'allowInsecure', 'skip-cert-verify');
+  bean.utlsFingerprint = getParam('fp', 'fingerprint', 'client-fingerprint');
+  bean.certificates = getParam('ca', 'certificate');
+  bean.idleSessionCheckInterval = getParam('idle-session-check-interval', 'idle_session_check_interval');
+  bean.idleSessionTimeout = getParam('idle-session-timeout', 'idle_session_timeout');
+  bean.minIdleSession = safeParseInt(getParam('min-idle-session', 'min_idle_session'), 0);
+
+  const echConfig = getParam('ech-config', 'ech_config');
+  if (echConfig) {
+    bean.enableECH = true;
+    bean.echConfig = echConfig;
+  }
+
+  return bean;
+}
+
+/**
  * 解析链接主函数
  * @param {string} link - 链接
  * @returns {AbstractBean|null} Bean 对象或 null
@@ -1185,6 +1303,9 @@ function parseLink(link) {
       case 'ssh':
         bean = parseSSH(link);
         break;
+      case 'anytls':
+        bean = parseAnyTLS(link);
+        break;
       default:
         return null;
     }
@@ -1208,6 +1329,12 @@ function postProcessBean(bean, options = {}) {
   if (bean instanceof StandardV2RayBean) {
     if (bean.isTLS() && !bean.sni && bean.host && !isIpAddress(bean.host)) {
       bean.sni = bean.host;
+    }
+  }
+
+  if (bean instanceof AnyTLSBean) {
+    if (!bean.sni && bean.serverAddress && !isIpAddress(bean.serverAddress)) {
+      bean.sni = bean.serverAddress;
     }
   }
 
@@ -1612,6 +1739,53 @@ function buildSingboxSSH(bean) {
 }
 
 /**
+ * 构建 Sing-box AnyTLS Outbound
+ * @param {AnyTLSBean} bean - Bean 对象
+ * @param {object} options - 选项
+ * @returns {object} Outbound 对象
+ */
+function buildSingboxAnyTLS(bean, options) {
+  const tls = {
+    enabled: true,
+    insecure: bean.allowInsecure || options.globalAllowInsecure,
+  };
+  if (bean.sni) tls.server_name = bean.sni;
+  if (bean.alpn) tls.alpn = listByLineOrComma(bean.alpn);
+  if (bean.certificates) tls.certificate = bean.certificates;
+  if (bean.utlsFingerprint) {
+    tls.utls = {
+      enabled: true,
+      fingerprint: bean.utlsFingerprint,
+    };
+  }
+  if (bean.enableECH && bean.echConfig) {
+    tls.ech = {
+      enabled: true,
+      config: listByLineOrComma(bean.echConfig),
+    };
+  }
+
+  const outbound = {
+    tag: bean.displayName(),
+    type: 'anytls',
+    server: bean.serverAddress,
+    server_port: bean.serverPort,
+    password: bean.password,
+    tls: tls,
+  };
+  if (bean.idleSessionCheckInterval) {
+    outbound.idle_session_check_interval = bean.idleSessionCheckInterval;
+  }
+  if (bean.idleSessionTimeout) {
+    outbound.idle_session_timeout = bean.idleSessionTimeout;
+  }
+  if (bean.minIdleSession > 0) {
+    outbound.min_idle_session = bean.minIdleSession;
+  }
+  return outbound;
+}
+
+/**
  * 构建 Sing-box Outbound 主函数
  * @param {AbstractBean} bean - Bean 对象
  * @param {object} options - 选项
@@ -1627,6 +1801,7 @@ function buildSingboxOutbound(bean, options) {
   if (bean instanceof TuicBean) return buildSingboxTuic(bean, options);
   if (bean instanceof WireGuardBean) return buildSingboxWireguard(bean, options);
   if (bean instanceof SSHBean) return buildSingboxSSH(bean, options);
+  if (bean instanceof AnyTLSBean) return buildSingboxAnyTLS(bean, options);
   throw new Error(`Unsupported bean type for Sing-box conversion: ${bean.constructor.name}`);
 }
 
@@ -1942,6 +2117,38 @@ function parseSingboxSSH(outbound) {
 }
 
 /**
+ * 解析 Sing-box AnyTLS Outbound
+ * @param {object} outbound - Outbound 对象
+ * @returns {AnyTLSBean} Bean 对象
+ */
+function parseSingboxAnyTLS(outbound) {
+  const bean = new AnyTLSBean();
+  bean.name = outbound.tag;
+  bean.serverAddress = outbound.server;
+  bean.serverPort = outbound.server_port;
+  bean.password = outbound.password || '';
+
+  if (outbound.tls && outbound.tls.enabled) {
+    bean.allowInsecure = outbound.tls.insecure || false;
+    bean.sni = outbound.tls.server_name || '';
+    bean.alpn = (outbound.tls.alpn || []).join(',');
+    bean.certificates = outbound.tls.certificate || '';
+    if (outbound.tls.utls && outbound.tls.utls.enabled) {
+      bean.utlsFingerprint = outbound.tls.utls.fingerprint || '';
+    }
+    if (outbound.tls.ech && outbound.tls.ech.enabled) {
+      bean.enableECH = true;
+      bean.echConfig = (outbound.tls.ech.config || []).join('\n');
+    }
+  }
+
+  bean.idleSessionCheckInterval = outbound.idle_session_check_interval || '';
+  bean.idleSessionTimeout = outbound.idle_session_timeout || '';
+  bean.minIdleSession = outbound.min_idle_session || 0;
+  return bean;
+}
+
+/**
  * 解析 Sing-box Outbound
  * @param {object} outbound - Outbound 对象
  * @returns {AbstractBean} Bean 对象
@@ -1980,6 +2187,9 @@ function parseSingboxOutbound(outbound) {
       break;
     case 'ssh':
       bean = parseSingboxSSH(outbound);
+      break;
+    case 'anytls':
+      bean = parseSingboxAnyTLS(outbound);
       break;
     default:
       throw new Error(`Unsupported outbound type for reverse conversion: ${outbound.type}`);

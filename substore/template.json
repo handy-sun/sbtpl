@@ -183,7 +183,6 @@
       {
         "protocol": [
           "bittorrent",
-          "ssh",
           "stun"
         ],
         "outbound": "🎯Direct"
