@@ -65,8 +65,8 @@ node base.js -s '<sub-link>' -p '<policy-filter>' --tun --icmp --windows -o conf
 # Linux TUN
 node base.js -s '<sub-link>' -p '<policy-filter>' --tun --linux -o config.json
 
-# Android 模式
-node base.js -s '<sub-link>' -p '<policy-filter>' --android -o config.json
+# Android 模式（TUN）
+node base.js -s '<sub-link>' -p '<policy-filter>' --tun --android -o config.json
 
 # 使用 just 任务
 just tun
@@ -82,7 +82,8 @@ just android-tun
 | `--subscribe-link` | `-s` | 订阅链接或原始内容（支持多订阅，用 `;` 或换行分隔） |
 | `--policy-filter` | `-p` | 节点策略筛选规则，格式：`@outboundTag-tagRegex` |
 | `--output-file` | `-o` | 输出文件路径，不指定则输出到 stdout |
-| `--tun` | `-t` | 启用 TUN 模式 |
+| `--template` | `-t` | 自定义模板 JSON 文件路径，不指定则使用内置默认模板 |
+| `--tun` | | 启用 TUN 模式 |
 | `--controller-port` | `-c` | clash_api 控制端口 |
 | `--mixed-port` | `-m` | 混合代理端口 |
 | `--log-file` | `-l` | 日志文件路径，设为空字符串禁用 |
@@ -106,5 +107,5 @@ just android-tun
 ## 注意
 
 - 无测试框架，无第三方 npm 依赖
-- 所有 *.json 被 .gitignore 排除
+- 所有 `node/*.json` 被 .gitignore 排除（`node/package.json` 例外，已被 git track）
 - 开发时用 `node base.js` 直接运行

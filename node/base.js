@@ -1,9 +1,10 @@
 import { parseArgs } from 'node:util'
+import path from 'node:path'
 import http from 'node:http'
 import https from 'node:https'
 import fs from 'fs/promises';
 
-import templateStr from '../substore/template.json' with { type: 'json' }
+import defaultTemplateStr from '../substore/template.json' with { type: 'json' }
 
 // --- 工具函数 --- [[[1
 
@@ -2533,6 +2534,7 @@ async function run() {
       'subscribe-link': subLink,
       'output-file': outputFile,
       'policy-filter': policyFilter,
+      'template': templatePath,
       'tun': isTunEnabled,
       'controller-port': ctrlapi,
       'mixed-port': mixport,
@@ -2557,9 +2559,12 @@ async function run() {
         type: 'string',
         short: 'p',
       },
+      'template': {
+        type: 'string',
+        short: 't',
+      },
       'tun': {
         type: 'boolean',
-        short: 't',
         default: false,
       },
       'controller-port': {
@@ -2621,6 +2626,18 @@ async function run() {
 
   const proxies = await convertToOutbounds(combinedInput.trim());
   sbtplLog(`parsed ${proxies?.length || 0} outbounds`);
+
+  // 加载模板（自定义或默认）
+  let templateStr;
+  if (templatePath) {
+    const resolvedPath = path.resolve(templatePath);
+    sbtplLog(`loading custom template from '${resolvedPath}'`);
+    const templateRaw = await fs.readFile(resolvedPath, 'utf-8');
+    templateStr = JSON.parse(templateRaw);
+  } else {
+    sbtplLog('using default template');
+    templateStr = defaultTemplateStr;
+  }
 
   const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows);
 
