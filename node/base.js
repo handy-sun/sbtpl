@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import path from 'node:path'
 import http from 'node:http'

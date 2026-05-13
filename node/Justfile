@@ -14,9 +14,6 @@ default:
 clean:
   rm -f ./*.json
 
-run:
-  sing-box run -c /opt/sing-box/config.json -D /opt/sing-box/var
-
 tun:
   node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp -o config.json
 
@@ -43,6 +40,3 @@ linux-tun:
 
 android-tun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --android -o android-tun.json
-
-android:
-  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --android -o android.json

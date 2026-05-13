@@ -107,13 +107,17 @@
     {
       "tag": "💬AI",
       "type": "selector",
-      "outbounds": [],
+      "outbounds": [
+        "⚡UrlTest"
+      ],
       "interrupt_exist_connections": true
     },
     {
       "tag": "🚀LowLatency",
       "type": "selector",
-      "outbounds": [],
+      "outbounds": [
+        "⚡UrlTest"
+      ],
       "interrupt_exist_connections": true
     },
     {
