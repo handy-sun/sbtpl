@@ -2533,6 +2533,7 @@ async function run() {
   const {
     values: {
       'subscribe-link': subLink,
+      'subscription-file': subscriptionFile,
       'output-file': outputFile,
       'policy-filter': policyFilter,
       'template': templatePath,
@@ -2551,6 +2552,10 @@ async function run() {
       'subscribe-link': {
         type: 'string',
         short: 's',
+      },
+      'subscription-file': {
+        type: 'string',
+        short: 'f',
       },
       'output-file': {
         type: 'string',
@@ -2601,17 +2606,22 @@ async function run() {
     },
   })
 
-  if (!subLink) {
+  if (!subLink && !subscriptionFile) {
     process.exit(1)
   }
 
   // handle many sub (split by '\n' or ';')
-  const subLinks = subLink
+  const subLinks = (subLink || '')
     .split(/[\n;]+/)
     .map(link => link.trim())
     .filter(link => link.length > 0);
 
-  sbtplLog(`processing ${subLinks.length} subscription link(s)`);
+  const subscriptionFiles = (subscriptionFile || '')
+    .split(/[\n;]+/)
+    .map(file => file.trim())
+    .filter(file => file.length > 0);
+
+  sbtplLog(`processing ${subLinks.length} subscription link(s), ${subscriptionFiles.length} subscription file(s)`);
 
   // merge all sub contents
   let combinedInput = '';
@@ -2621,6 +2631,14 @@ async function run() {
     const subscriptionInput = isHttpSubscriptionUrl(subLink)
       ? normalizeSubscriptionContent(await fetchSubscriptionText(subLink))
       : normalizeSubscriptionContent(subLink);
+    sbtplLog(`normalized content length: ${subscriptionInput.length}`);
+    combinedInput += subscriptionInput + '\n';
+  }
+
+  for (const filePath of subscriptionFiles) {
+    const resolvedPath = path.resolve(filePath);
+    sbtplLog(`input mode: file - ${resolvedPath}`);
+    const subscriptionInput = normalizeSubscriptionContent(await fs.readFile(resolvedPath, 'utf-8'));
     sbtplLog(`normalized content length: ${subscriptionInput.length}`);
     combinedInput += subscriptionInput + '\n';
   }

@@ -80,6 +80,7 @@ just android-tun
 | 参数 | 缩写 | 说明 |
 |------|------|------|
 | `--subscribe-link` | `-s` | 订阅链接或原始内容（支持多订阅，用 `;` 或换行分隔） |
+| `--subscription-file` | `-f` | 本地订阅文件路径（文件内容按订阅响应处理，支持多文件，用 `;` 或换行分隔） |
 | `--policy-filter` | `-p` | 节点策略筛选规则，格式：`@outboundTag-tagRegex` |
 | `--output-file` | `-o` | 输出文件路径，不指定则输出到 stdout |
 | `--template` | `-t` | 自定义模板 JSON 文件路径，不指定则使用内置默认模板 |
