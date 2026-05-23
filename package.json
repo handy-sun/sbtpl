@@ -1,0 +1,28 @@
+{
+  "name": "sbtpl",
+  "version": "0.3.0",
+  "description": "sing-box configuration generator — converts proxy subscription links to sing-box JSON config",
+  "type": "module",
+  "main": "node/base.js",
+  "bin": {
+    "sbtpl": "node/base.js"
+  },
+  "files": [
+    "node/base.js",
+    "substore/template.json"
+  ],
+  "keywords": [
+    "sing-box",
+    "proxy",
+    "subscription",
+    "cli"
+  ],
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/handy-sun/sbtpl.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
