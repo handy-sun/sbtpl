@@ -209,12 +209,6 @@
         "outbound": "🎯Direct"
       },
       {
-        "ip_cidr": [
-          "103.149.93.9/32"
-        ],
-        "outbound": "🎯Direct"
-      },
-      {
         "rule_set": [
           "geosite-category-ai-!cn",
           "geosite-jetbrains-ai",
@@ -231,11 +225,7 @@
         "outbound": "🌐Proxy"
       },
       {
-        "rule_set": [
-          "hdy-domain",
-          "hdy-port",
-          "hdy-pname"
-        ],
+        "rule_set": "hdy-direct",
         "outbound": "🎯Direct"
       },
       {
@@ -498,29 +488,15 @@
       {
         "tag": "game-download",
         "type": "remote",
-        "format": "source",
-        "url": "https://ruleset.skk.moe/sing-box/domainset/game-download.json",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/handy-sun/dotfiles/main/sbsrs/game-download.srs",
         "download_detour": "🎯Direct"
       },
       {
-        "tag": "hdy-domain",
+        "tag": "hdy-direct",
         "type": "remote",
-        "format": "source",
-        "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/direct/domain.json",
-        "download_detour": "🎯Direct"
-      },
-      {
-        "tag": "hdy-port",
-        "type": "remote",
-        "format": "source",
-        "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/direct/port.json",
-        "download_detour": "🎯Direct"
-      },
-      {
-        "tag": "hdy-pname",
-        "type": "remote",
-        "format": "source",
-        "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/direct/pname.json",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/handy-sun/dotfiles/main/sbsrs/hdy-direct.srs",
         "download_detour": "🎯Direct"
       },
       {
@@ -529,7 +505,6 @@
         "format": "source",
         "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/proxy/claude.json",
         "download_detour": "🎯Direct"
-      }
-    ]
+      }]
   }
 }
