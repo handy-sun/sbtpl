@@ -4,7 +4,7 @@ set shell := ["bash", "-uc"]
 
 subLine := "http://handy:3001/c53248f264d9997/download/collection/main?target=URI"
 
-policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
+policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网|Rfchost(.+)Anytls|kooya|\\]日本)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
 
 alias b := tun
 
