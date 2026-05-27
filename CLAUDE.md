@@ -11,7 +11,8 @@ sbtpl (sing-box template) — sing-box 配置生成器。将代理订阅链接�
 ```
 sbtpl/
 ├── node/              # CLI 工具 (Node.js ESM)
-│   ├── base.js        # 主入口（~3050 行）
+│   ├── base.js        # 主入口 — 客户端配置生成（~2700 行）
+│   ├── server.js      # server 子命令 — 服务端配置管理（~650 行）
 │   ├── package.json   # 仅声明 type:module
 │   ├── Justfile       # just 任务定义
 │   └── windows-tun.json  # 示例输出
@@ -26,14 +27,24 @@ sbtpl/
 
 核心流水线：订阅链接 → 解析 Bean → 构建 outbound → 注入模板 → 输出 JSON
 
-代码分三大模块：
+代码分五大模块：
 
 1. **Bean 模型**（约 720 行）：每种代理协议一个类（VMessBean, TrojanBean, ShadowsocksBean 等），继承自 AbstractBean。每个 Bean 有 `initializeDefaultValues()` 和 `toUri()`。
 2. **链接解析器**（约 480 行）：`parseLink()` 根据协议分发到 `parseV2Ray()`、`parseShadowsocks()` 等函数。
 3. **Sing-box Outbound 构建**（约 460 行）：`buildSingboxOutbound()` 根据 Bean 类型分发到 `buildSingboxVMess()`、`buildSingboxTrojan()` 等函数。`buildSingboxTLS()`、`buildSingboxMux()`、`buildSingboxStreamSettings()` 是共享构建块。
 4. **反向转换**（约 380 行）：Outbound JSON → Bean → URI 链接（`parseSingboxOutbound()` → `toUri()`）。
 5. **模板处理**（约 160 行）：`setTemplateValue()` 修改模板配置（端口、TUN、ICMP 等），`insertProxies()` 将解析出的节点注入 selector/urltest outbound。
-6. **服务端配置管理**（约 350 行）：`server` 子命令体系，元数据驱动的增量配置管理。`PROTOCOL_REGISTRY` 定义协议字段和服务端 inbound 构建，支持 `add/remove/list/set/gen` 命令和交互式菜单。
+
+base.js 导出 Bean 类和工具函数供 server.js 使用，入口处通过 `execFileSync` 子进程调用 server.js 避免循环依赖。
+
+### node/server.js — 服务端配置管理
+
+`server` 子命令体系，从 base.js 拆分而来。元数据驱动的增量配置管理：
+
+- `PROTOCOL_REGISTRY` 定义协议字段、服务端 inbound 构建、meta ↔ Bean 转换
+- 支持 `add/remove/list/set/gen` 命令和 TUI 交互式菜单
+- gen 输出：服务端 sing-box 配置、客户端 outbound 配置、NixOS module
+- 依赖 base.js 导出的 Bean 类、`buildSingboxOutbound`、工具函数
 
 ### substore/substore.js — Sub-Store 脚本
 
