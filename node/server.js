@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util'
 import { createInterface } from 'node:readline'
 import path from 'node:path'
+import os from 'node:os'
 import fs from 'fs/promises'
 
 import {
@@ -12,7 +13,7 @@ import {
 
 // --- 服务端配置管理 ---
 
-const DEFAULT_META_PATH = 'sbtpl-meta.json'
+const DEFAULT_META_PATH = path.join(os.homedir(), '.config/sbtpl/meta.json')
 
 const PROTOCOL_REGISTRY = {
   vmess: {
@@ -125,6 +126,7 @@ async function loadMeta(metaPath) {
 
 async function saveMeta(meta, metaPath) {
   const p = metaPath || DEFAULT_META_PATH
+  await fs.mkdir(path.dirname(p), { recursive: true })
   await fs.writeFile(p, JSON.stringify(meta, null, 2), 'utf-8')
   sbtplLog(`saved to ${p}`)
 }
