@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
+import { createInterface } from 'node:readline'
 import path from 'node:path'
 import http from 'node:http'
 import https from 'node:https'
+import crypto from 'node:crypto'
 import fs from 'fs/promises';
 
 import defaultTemplateStr from '../substore/template.json' with { type: 'json' }
@@ -115,6 +117,16 @@ function hopPortsToSingboxList(s) {
     const pRange = it.replace('-', ':');
     return pRange.includes(':') ? pRange : null;
   }).filter(Boolean);
+}
+
+// --- 凭据生成 ---
+
+function generateUUID() {
+  return crypto.randomUUID()
+}
+
+function generateRandomBase64(byteLength) {
+  return crypto.randomBytes(byteLength).toString('base64')
 }
 
 // --- Bean 类 ---
@@ -287,6 +299,10 @@ class StandardV2RayBean extends AbstractBean {
       link += `#${encodeURIComponent(this.name)}`;
     }
     return link;
+  }
+
+  isVLESS() {
+    return false;
   }
 }
 
@@ -2673,6 +2689,563 @@ async function run() {
   }
 }
 
-run();
+// --- 服务端配置管理 ---
+
+const DEFAULT_META_PATH = 'sbtpl-meta.json'
+
+const PROTOCOL_REGISTRY = {
+  vmess: {
+    label: 'VMess',
+    defaultPort: 20086,
+    fields: [
+      { name: 'port', type: 'number', default: 20086, prompt: '端口' },
+      { name: 'uuid', type: 'string', generate: () => generateUUID(), prompt: 'UUID' },
+    ],
+    buildServerInbound(entry) {
+      return {
+        type: 'vmess', tag: 'vmess-in', listen: '::',
+        listen_port: entry.port,
+        users: [{ uuid: entry.uuid }],
+      }
+    },
+    metaToBean(entry, ip) {
+      const bean = new VMessBean()
+      bean.serverAddress = ip
+      bean.serverPort = entry.port
+      bean.uuid = entry.uuid
+      bean.encryption = 'auto'
+      bean.name = this.label
+      return bean
+    },
+    summary(entry) {
+      return `port=${entry.port}  uuid=${entry.uuid}`
+    },
+    editableFields: ['port', 'uuid'],
+  },
+  trojan: {
+    label: 'Trojan',
+    defaultPort: 443,
+    fields: [
+      { name: 'port', type: 'number', default: 443, prompt: '端口' },
+      { name: 'password', type: 'string', generate: () => generateRandomBase64(16), prompt: '密码' },
+      { name: 'domain', type: 'string', required: true, prompt: '域名 (TLS server_name)' },
+    ],
+    buildServerInbound(entry) {
+      return {
+        type: 'trojan', tag: 'trojan-in', listen: '::',
+        listen_port: entry.port,
+        users: [{ password: entry.password }],
+        tls: {
+          enabled: true,
+          server_name: entry.domain,
+          certificate_path: '/var/lib/sing-box/cert.pem',
+          key_path: '/var/lib/sing-box/priv.key',
+        },
+      }
+    },
+    metaToBean(entry, ip) {
+      const bean = new TrojanBean()
+      bean.serverAddress = ip
+      bean.serverPort = entry.port
+      bean.password = entry.password
+      bean.sni = entry.domain
+      bean.security = 'tls'
+      bean.name = this.label
+      return bean
+    },
+    summary(entry) {
+      return `port=${entry.port}  domain=${entry.domain}`
+    },
+    editableFields: ['port', 'password', 'domain'],
+  },
+  ss: {
+    label: 'SS 2022',
+    defaultPort: 20085,
+    fields: [
+      { name: 'port', type: 'number', default: 20085, prompt: '端口' },
+      { name: 'method', type: 'string', default: '2022-blake3-aes-256-gcm', prompt: '加密方法' },
+      { name: 'password', type: 'string', generate: () => generateRandomBase64(32), prompt: '密码' },
+    ],
+    buildServerInbound(entry) {
+      return {
+        type: 'shadowsocks', tag: 'ss-in', listen: '::',
+        listen_port: entry.port,
+        method: entry.method,
+        password: entry.password,
+      }
+    },
+    metaToBean(entry, ip) {
+      const bean = new ShadowsocksBean()
+      bean.serverAddress = ip
+      bean.serverPort = entry.port
+      bean.method = entry.method
+      bean.password = entry.password
+      bean.name = this.label
+      return bean
+    },
+    summary(entry) {
+      return `port=${entry.port}  method=${entry.method}`
+    },
+    editableFields: ['port', 'method', 'password'],
+  },
+}
+
+// --- 元数据管理 ---
+
+async function loadMeta(metaPath) {
+  const p = metaPath || DEFAULT_META_PATH
+  try {
+    const raw = await fs.readFile(p, 'utf-8')
+    return JSON.parse(raw)
+  } catch {
+    return { ip: '', protocols: [] }
+  }
+}
+
+async function saveMeta(meta, metaPath) {
+  const p = metaPath || DEFAULT_META_PATH
+  await fs.writeFile(p, JSON.stringify(meta, null, 2), 'utf-8')
+  sbtplLog(`saved to ${p}`)
+}
+
+// --- server 子命令 ---
+
+function parseServerArgs(argv) {
+  const result = { command: null, protocol: null, positional: [], values: {} }
+  let i = 0
+  // subcommand
+  if (i < argv.length && !argv[i].startsWith('-')) {
+    result.command = argv[i++]
+  }
+  // protocol (for add/remove)
+  if (i < argv.length && !argv[i].startsWith('-')) {
+    result.protocol = argv[i++]
+  }
+  // parse remaining as flags
+  const remaining = argv.slice(i)
+  const parsed = parseArgs({
+    args: remaining,
+    options: {
+      'port': { type: 'string' },
+      'domain': { type: 'string' },
+      'method': { type: 'string' },
+      'password': { type: 'string' },
+      'uuid': { type: 'string' },
+      'ip': { type: 'string' },
+      'meta': { type: 'string' },
+      'output-dir': { type: 'string', short: 'o' },
+    },
+    strict: false,
+  })
+  result.values = parsed.values
+  result.positional = parsed.positionals
+  return result
+}
+
+function getMetaPath(values) {
+  return values.meta || DEFAULT_META_PATH
+}
+
+function getShareLink(entry, ip) {
+  const reg = PROTOCOL_REGISTRY[entry.type]
+  if (!reg) return null
+  const bean = reg.metaToBean(entry, ip)
+  return bean.toUri()
+}
+
+function printShareLinks(meta) {
+  if (!meta.protocols.length) return
+  console.log('\n--- Share Links ---')
+  meta.protocols.forEach((entry, i) => {
+    const reg = PROTOCOL_REGISTRY[entry.type]
+    if (!reg) return
+    const link = getShareLink(entry, meta.ip)
+    console.log(`\n[${i + 1}. ${reg.label}]`)
+    console.log(link)
+  })
+}
+
+async function serverAdd(protocol, values, metaPath) {
+  const reg = PROTOCOL_REGISTRY[protocol]
+  if (!reg) {
+    sbtplErr(`unknown protocol: ${protocol}. supported: ${Object.keys(PROTOCOL_REGISTRY).join(', ')}`)
+    process.exit(1)
+  }
+
+  const meta = await loadMeta(metaPath)
+
+  if (!meta.ip) {
+    sbtplErr('server IP not set. use: sbtpl server set --ip <addr>')
+    process.exit(1)
+  }
+
+  // check duplicate
+  if (meta.protocols.some(p => p.type === protocol)) {
+    sbtplErr(`${protocol} already exists. remove it first or use a different protocol`)
+    process.exit(1)
+  }
+
+  // build entry from fields
+  const entry = { type: protocol }
+  for (const field of reg.fields) {
+    if (values[field.name] !== undefined) {
+      entry[field.name] = field.type === 'number' ? safeParseInt(values[field.name], field.default) : values[field.name]
+    } else if (field.generate) {
+      entry[field.name] = field.generate()
+    } else if (field.default !== undefined) {
+      entry[field.name] = field.default
+    } else if (field.required) {
+      sbtplErr(`--${field.name} is required for ${protocol}`)
+      process.exit(1)
+    }
+  }
+
+  meta.protocols.push(entry)
+  await saveMeta(meta, metaPath)
+
+  sbtplLog(`added ${reg.label}: ${reg.summary(entry)}`)
+  const link = getShareLink(entry, meta.ip)
+  console.log(`\n${link}`)
+}
+
+async function serverRemove(protocol, metaPath) {
+  const meta = await loadMeta(metaPath)
+  const idx = meta.protocols.findIndex(p => p.type === protocol)
+  if (idx === -1) {
+    sbtplErr(`${protocol} not found in config`)
+    process.exit(1)
+  }
+  const removed = meta.protocols.splice(idx, 1)[0]
+  await saveMeta(meta, metaPath)
+  sbtplLog(`removed ${PROTOCOL_REGISTRY[protocol]?.label || protocol}`)
+}
+
+async function serverList(metaPath) {
+  const meta = await loadMeta(metaPath)
+  if (!meta.ip) {
+    console.log('No server configured. use: sbtpl server set --ip <addr>')
+    return
+  }
+  if (!meta.protocols.length) {
+    console.log(`Server: ${meta.ip}\nNo protocols configured. use: sbtpl server add <protocol>`)
+    return
+  }
+  console.log(`Server: ${meta.ip}\n`)
+  meta.protocols.forEach((entry, i) => {
+    const reg = PROTOCOL_REGISTRY[entry.type]
+    if (!reg) return
+    console.log(`${i + 1}. ${reg.label}  ${reg.summary(entry)}`)
+  })
+  printShareLinks(meta)
+}
+
+async function serverSet(values, metaPath) {
+  const meta = await loadMeta(metaPath)
+  if (values.ip) {
+    meta.ip = values.ip
+    sbtplLog(`server IP set to ${values.ip}`)
+  }
+  await saveMeta(meta, metaPath)
+}
+
+async function serverGen(metaPath, outputDir) {
+  const meta = await loadMeta(metaPath)
+  if (!meta.ip || !meta.protocols.length) {
+    sbtplErr('no server IP or protocols configured')
+    process.exit(1)
+  }
+
+  // build server inbounds
+  const inbounds = meta.protocols.map(entry => {
+    const reg = PROTOCOL_REGISTRY[entry.type]
+    return reg.buildServerInbound(entry)
+  })
+  const serverConfig = {
+    log: { level: 'info', timestamp: true },
+    inbounds,
+    outbounds: [{ type: 'direct', tag: 'direct' }],
+  }
+
+  // build client outbounds
+  const clientOutboundTags = []
+  const clientOutbounds = []
+  meta.protocols.forEach(entry => {
+    const reg = PROTOCOL_REGISTRY[entry.type]
+    const bean = reg.metaToBean(entry, meta.ip)
+    const outbound = buildSingboxOutbound(bean, {})
+    clientOutboundTags.push(outbound.tag)
+    clientOutbounds.push(outbound)
+  })
+  const clientConfig = {
+    log: { level: 'info', timestamp: true },
+    outbounds: [
+      { type: 'selector', tag: 'proxy', outbounds: [...clientOutboundTags, 'direct'] },
+      ...clientOutbounds,
+      { type: 'direct', tag: 'direct' },
+    ],
+  }
+
+  // build NixOS module
+  const nixInbounds = inbounds.map(ib => {
+    const lines = ['        {']
+    lines.push(`          type = "${ib.type}";`)
+    lines.push(`          tag = "${ib.tag}";`)
+    lines.push(`          listen = "::";`)
+    lines.push(`          listen_port = ${ib.listen_port};`)
+    if (ib.type === 'shadowsocks') {
+      lines.push(`          method = "${ib.method}";`)
+      lines.push(`          password = "${ib.password}";`)
+    } else if (ib.type === 'vmess') {
+      lines.push(`          users = [ { uuid = "${ib.users[0].uuid}"; } ];`)
+    } else if (ib.type === 'trojan') {
+      lines.push(`          users = [ { password = "${ib.users[0].password}"; } ];`)
+      lines.push(`          tls = {`)
+      lines.push(`            enabled = true;`)
+      lines.push(`            server_name = "${ib.tls.server_name}";`)
+      lines.push(`            certificate_path = "${ib.tls.certificate_path}";`)
+      lines.push(`            key_path = "${ib.tls.key_path}";`)
+      lines.push(`          };`)
+    }
+    lines.push('        }')
+    return lines.join('\n')
+  }).join('\n')
+
+  const nixModule = `{ config, pkgs, ... }:
+{
+  services.sing-box = {
+    enable = true;
+    settings = {
+      log = {
+        level = "info";
+        timestamp = true;
+      };
+      inbounds = [
+${nixInbounds}
+      ];
+      outbounds = [
+        {
+          type = "direct";
+          tag = "direct";
+        }
+      ];
+    };
+  };
+}
+`
+
+  // write files
+  const dir = outputDir || '.'
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, 'server-config.json'), JSON.stringify(serverConfig, null, 2), 'utf-8')
+  await fs.writeFile(path.join(dir, 'client-config.json'), JSON.stringify(clientConfig, null, 2), 'utf-8')
+  await fs.writeFile(path.join(dir, 'sing-box-server.nix'), nixModule, 'utf-8')
+
+  sbtplLog(`output directory: ${dir}`)
+  sbtplLog(`  server-config.json`)
+  sbtplLog(`  client-config.json`)
+  sbtplLog(`  sing-box-server.nix`)
+
+  printShareLinks(meta)
+}
+
+// --- 交互式菜单 ---
+
+function ask(rl, question) {
+  return new Promise(resolve => rl.question(question, resolve))
+}
+
+async function choose(rl, prompt, options) {
+  console.log(`\n${prompt}`)
+  options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt}`))
+  const answer = await ask(rl, '请选择: ')
+  const idx = parseInt(answer, 10) - 1
+  if (idx < 0 || idx >= options.length) {
+    console.log('无效选择')
+    return null
+  }
+  return idx
+}
+
+async function interactiveAdd(rl, meta) {
+  const protocols = Object.keys(PROTOCOL_REGISTRY)
+  const labels = protocols.map(k => PROTOCOL_REGISTRY[k].label)
+  const idx = await choose(rl, '选择协议:', labels)
+  if (idx === null) return
+
+  const protocol = protocols[idx]
+  const reg = PROTOCOL_REGISTRY[protocol]
+
+  if (meta.protocols.some(p => p.type === protocol)) {
+    console.log(`${protocol} 已存在，请先删除`)
+    return
+  }
+
+  const entry = { type: protocol }
+  for (const field of reg.fields) {
+    const defaultVal = field.generate ? '(自动生成)' : (field.default ?? '')
+    const hint = defaultVal ? ` (默认: ${defaultVal})` : ''
+    const answer = await ask(rl, `${field.prompt}${hint}: `)
+    if (answer.trim()) {
+      entry[field.name] = field.type === 'number' ? safeParseInt(answer.trim(), field.default) : answer.trim()
+    } else if (field.generate) {
+      entry[field.name] = field.generate()
+    } else if (field.default !== undefined) {
+      entry[field.name] = field.default
+    } else if (field.required) {
+      console.log(`${field.prompt} 不能为空`)
+      return
+    }
+  }
+
+  meta.protocols.push(entry)
+  console.log(`\n已添加 ${reg.label}: ${reg.summary(entry)}`)
+  console.log(getShareLink(entry, meta.ip))
+}
+
+async function interactiveRemove(rl, meta) {
+  if (!meta.protocols.length) {
+    console.log('没有可删除的配置')
+    return
+  }
+  const labels = meta.protocols.map((e, i) => {
+    const reg = PROTOCOL_REGISTRY[e.type]
+    return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
+  })
+  const idx = await choose(rl, '选择要删除的配置:', labels)
+  if (idx === null) return
+  const removed = meta.protocols.splice(idx, 1)[0]
+  console.log(`已删除 ${PROTOCOL_REGISTRY[removed.type]?.label || removed.type}`)
+}
+
+async function interactiveModify(rl, meta) {
+  if (!meta.protocols.length) {
+    console.log('没有可修改的配置')
+    return
+  }
+  const labels = meta.protocols.map((e, i) => {
+    const reg = PROTOCOL_REGISTRY[e.type]
+    return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
+  })
+  const idx = await choose(rl, '选择要修改的配置:', labels)
+  if (idx === null) return
+
+  const entry = meta.protocols[idx]
+  const reg = PROTOCOL_REGISTRY[entry.type]
+  if (!reg) return
+
+  const fieldIdx = await choose(rl, '选择修改项:', reg.editableFields)
+  if (fieldIdx === null) return
+
+  const fieldName = reg.editableFields[fieldIdx]
+  const currentVal = entry[fieldName]
+  const answer = await ask(rl, `${fieldName} (当前: ${currentVal}): `)
+  if (!answer.trim()) {
+    console.log('未修改')
+    return
+  }
+  const fieldDef = reg.fields.find(f => f.name === fieldName)
+  entry[fieldName] = fieldDef?.type === 'number' ? safeParseInt(answer.trim(), currentVal) : answer.trim()
+  console.log(`已更新 ${fieldName} = ${entry[fieldName]}`)
+  console.log(getShareLink(entry, meta.ip))
+}
+
+async function interactiveSetIp(rl, meta) {
+  const answer = await ask(rl, `服务器 IP (当前: ${meta.ip || '未设置'}): `)
+  if (answer.trim()) {
+    meta.ip = answer.trim()
+    console.log(`服务器 IP 已设置为 ${meta.ip}`)
+  }
+}
+
+async function serverInteractive(metaPath) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  let meta = await loadMeta(metaPath)
+
+  if (!meta.ip) {
+    await interactiveSetIp(rl, meta)
+    await saveMeta(meta, metaPath)
+  }
+
+  let running = true
+  while (running) {
+    console.log('\n==============================')
+    console.log('  sbtpl server 管理')
+    console.log('==============================')
+    console.log(`  服务器: ${meta.ip || '未设置'}  协议数: ${meta.protocols.length}`)
+    console.log('------------------------------')
+    const action = await choose(rl, '', [
+      '添加配置',
+      '查看配置',
+      '修改配置',
+      '删除配置',
+      '设置服务器 IP',
+      '生成配置文件',
+      '退出',
+    ])
+
+    switch (action) {
+      case 0: await interactiveAdd(rl, meta); await saveMeta(meta, metaPath); break
+      case 1: await serverList(metaPath); break
+      case 2: await interactiveModify(rl, meta); await saveMeta(meta, metaPath); break
+      case 3: await interactiveRemove(rl, meta); await saveMeta(meta, metaPath); break
+      case 4: await interactiveSetIp(rl, meta); await saveMeta(meta, metaPath); break
+      case 5:
+        const dirAnswer = await ask(rl, '输出目录 (默认: 当前目录): ')
+        await serverGen(metaPath, dirAnswer.trim() || '.')
+        break
+      case 6: running = false; break
+      default: console.log('无效选择'); break
+    }
+  }
+  rl.close()
+  console.log('再见!')
+}
+
+// --- server 命令分发 ---
+
+async function serverDispatch(argv) {
+  const args = parseServerArgs(argv)
+  const metaPath = getMetaPath(args.values)
+
+  switch (args.command) {
+    case 'add':
+      if (!args.protocol) {
+        sbtplErr('usage: sbtpl server add <protocol> [--port ...] [--domain ...]')
+        process.exit(1)
+      }
+      await serverAdd(args.protocol, args.values, metaPath)
+      break
+    case 'remove':
+    case 'rm':
+      if (!args.protocol) {
+        sbtplErr('usage: sbtpl server remove <protocol>')
+        process.exit(1)
+      }
+      await serverRemove(args.protocol, metaPath)
+      break
+    case 'list':
+    case 'ls':
+      await serverList(metaPath)
+      break
+    case 'set':
+      await serverSet(args.values, metaPath)
+      break
+    case 'gen':
+      await serverGen(metaPath, args.values['output-dir'])
+      break
+    default:
+      await serverInteractive(metaPath)
+      break
+  }
+}
+
+// --- 入口 ---
+
+const subCommand = process.argv[2]
+if (subCommand === 'server') {
+  serverDispatch(process.argv.slice(3))
+} else {
+  run()
+}
 
 // vim:fdm=marker:fmr=[[[,]]]

@@ -11,7 +11,7 @@ sbtpl (sing-box template) — sing-box 配置生成器。将代理订阅链接�
 ```
 sbtpl/
 ├── node/              # CLI 工具 (Node.js ESM)
-│   ├── base.js        # 主入口（~2642 行）
+│   ├── base.js        # 主入口（~3050 行）
 │   ├── package.json   # 仅声明 type:module
 │   ├── Justfile       # just 任务定义
 │   └── windows-tun.json  # 示例输出
@@ -33,6 +33,7 @@ sbtpl/
 3. **Sing-box Outbound 构建**（约 460 行）：`buildSingboxOutbound()` 根据 Bean 类型分发到 `buildSingboxVMess()`、`buildSingboxTrojan()` 等函数。`buildSingboxTLS()`、`buildSingboxMux()`、`buildSingboxStreamSettings()` 是共享构建块。
 4. **反向转换**（约 380 行）：Outbound JSON → Bean → URI 链接（`parseSingboxOutbound()` → `toUri()`）。
 5. **模板处理**（约 160 行）：`setTemplateValue()` 修改模板配置（端口、TUN、ICMP 等），`insertProxies()` 将解析出的节点注入 selector/urltest outbound。
+6. **服务端配置管理**（约 350 行）：`server` 子命令体系，元数据驱动的增量配置管理。`PROTOCOL_REGISTRY` 定义协议字段和服务端 inbound 构建，支持 `add/remove/list/set/gen` 命令和交互式菜单。
 
 ### substore/substore.js — Sub-Store 脚本
 
@@ -75,7 +76,7 @@ just linux-tun
 just android-tun
 ```
 
-### CLI 参数
+### CLI 参数（客户端配置生成）
 
 | 参数 | 缩写 | 说明 |
 |------|------|------|
@@ -92,6 +93,52 @@ just android-tun
 | `--linux` | | Linux TUN（auto_redirect） |
 | `--windows` | | Windows TUN（gVisor 栈） |
 | `--icmp` | | ICMP 透传（sing-box >= 1.13） |
+
+### `sbtpl server` 子命令（服务端配置管理）
+
+元数据驱动的服务端配置管理工具。配置存储在 `sbtpl-meta.json` 中，支持增量添加/删除协议，随时生成 share links 和配置文件。
+
+```bash
+# 交互式菜单（无参数运行）
+node base.js server
+
+# 命令式操作
+node base.js server set --ip 1.2.3.4
+node base.js server add vmess
+node base.js server add trojan --domain yourdomain.com
+node base.js server add ss --port 8388
+node base.js server list
+node base.js server gen -o ./output
+node base.js server remove vmess
+```
+
+#### server 子命令
+
+| 命令 | 说明 |
+|------|------|
+| (无参数) | 进入交互式菜单 |
+| `add <protocol>` | 添加协议配置，凭据自动生成 |
+| `remove <protocol>` | 删除协议配置 |
+| `list` | 查看所有配置及 share links |
+| `set --ip <addr>` | 设置服务器 IP |
+| `gen [-o <dir>]` | 生成服务端/客户端配置文件及 NixOS 模块 |
+
+#### add 参数
+
+| 参数 | 说明 |
+|------|------|
+| `--port` | 端口号（各协议有默认值） |
+| `--domain` | Trojan TLS 域名（trojan 必填） |
+| `--method` | SS 加密方法（默认 2022-blake3-aes-256-gcm） |
+| `--meta` | 元数据文件路径（默认 ./sbtpl-meta.json） |
+
+#### gen 输出文件
+
+| 文件 | 说明 |
+|------|------|
+| `server-config.json` | sing-box 服务端配置 |
+| `client-config.json` | 客户端配置（selector + 各协议 outbound） |
+| `sing-box-server.nix` | NixOS `services.sing-box` 模块 |
 
 ### policy-filter 格式
 
