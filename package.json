@@ -9,7 +9,8 @@
   },
   "files": [
     "node/base.js",
-    "substore/template.json"
+    "substore/template.json",
+    "README.md"
   ],
   "keywords": [
     "sing-box",
