@@ -1,6 +1,6 @@
 {
   "name": "sbtpl",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "sing-box configuration generator — converts proxy subscription links to sing-box JSON config",
   "type": "module",
   "main": "node/base.js",
