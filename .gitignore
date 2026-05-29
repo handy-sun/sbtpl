@@ -1,5 +1,5 @@
 node/node_modules
-
 node/*.json
-
 sbtpl-meta.json
+CLAUDE.md
+AGENT.md
