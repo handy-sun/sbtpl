@@ -2482,10 +2482,12 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
     let trimStr = logFilePath.trim()
     if (trimStr === '') {
       delete config.log.output
-      sbtplLog(`📝 删除了log.output`)
+      delete config.log.timestamp
+      sbtplLog(`📝 删除了log.output 和 log.timestamp`)
     } else {
       config.log.output = trimStr
-      sbtplLog(`📝 修改了log.output: ${config.log.output}`)
+      config.log.timestamp = true
+      sbtplLog(`📝 修改了log.output: ${config.log.output}, log.timestamp: true`)
     }
   }
   return config;

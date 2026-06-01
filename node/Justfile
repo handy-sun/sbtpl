@@ -2,7 +2,7 @@
 
 set shell := ["bash", "-uc"]
 
-subLine := "http://handy:3001/c53248f264d9997/download/collection/main?target=URI"
+subLine := "http://handyMini:3001/c53248f264d9997/download/collection/main?target=URI"
 
 policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网|Rfchost(.+)Anytls|kooya|\\]日本)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
 
@@ -13,6 +13,12 @@ default:
 
 clean:
   rm -f ./*.json
+
+realdns:
+  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp --template '../substore/real-dns.json' -o config.json
+
+realdns-log:
+  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp --template '../substore/real-dns.json' --log-file box.log -o config.json
 
 tun:
   node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp -o config.json
@@ -30,7 +36,7 @@ imx-notun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp --mixed-port 2134 -o imx-notun.json
 
 nout-itun:
-  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --icmp --log-file '' -o nout-itun.json
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --icmp --log-file 'box.log' -o nout-itun.json
 
 icmp-tun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --icmp -o icmp-tun.json
