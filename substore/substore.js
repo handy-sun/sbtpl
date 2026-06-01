@@ -159,10 +159,12 @@ if (output) {
   let trimStr = output.trim()
   if (trimStr === "") {
     delete config.log.output
-    log(`📝 删除了log.output`)
+    delete config.log.timestamp
+    log(`📝 删除了log.output 和 log.timestamp`)
   } else {
     config.log.output = trimStr
-    log(`📝 修改了log.output: ${config.log.output}`)
+    config.log.timestamp = true
+    log(`📝 修改了log.output: ${config.log.output}, log.timestamp: true`)
   }
 }
 
