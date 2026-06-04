@@ -4,12 +4,16 @@
   "description": "sing-box configuration generator — converts proxy subscription links to sing-box JSON config",
   "type": "module",
   "main": "node/base.js",
+  "scripts": {
+    "test": "node --test"
+  },
   "bin": {
     "sbtpl": "node/base.js"
   },
   "files": [
     "node/base.js",
-    "substore/template.json",
+    "node/server.js",
+    "substore/",
     "README.md"
   ],
   "keywords": [

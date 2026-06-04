@@ -169,6 +169,42 @@ function getMetaPath(values) {
   return values.meta || DEFAULT_META_PATH
 }
 
+export function getLocalIpFromInterfaces(interfaces = os.networkInterfaces()) {
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries || []) {
+      const isIPv4 = entry.family === 'IPv4' || entry.family === 4
+      if (isIPv4 && !entry.internal && entry.address) {
+        return entry.address
+      }
+    }
+  }
+  return ''
+}
+
+function getLocalIp() {
+  return getLocalIpFromInterfaces()
+}
+
+export function resolveServerIpInput(answer, currentIp, options = {}) {
+  const {
+    autoDetectIfEmpty = false,
+    detectLocalIp = getLocalIp,
+  } = options
+  const ip = answer.trim()
+  if (ip) {
+    return { changed: true, ip, autoDetected: false }
+  }
+
+  if (autoDetectIfEmpty) {
+    const detectedIp = detectLocalIp()
+    if (detectedIp) {
+      return { changed: true, ip: detectedIp, autoDetected: true }
+    }
+  }
+
+  return { changed: false, ip: currentIp, autoDetected: false }
+}
+
 function getShareLink(entry, ip) {
   const reg = PROTOCOL_REGISTRY[entry.type]
   if (!reg) return null
@@ -510,11 +546,16 @@ async function interactiveModify(rl, meta) {
   return renderStatus(`已更新 ${fieldName} = ${entry[fieldName]}`) + `\n\n  ${link}`
 }
 
-async function interactiveSetIp(rl, meta) {
+async function interactiveSetIp(rl, meta, options = {}) {
   const answer = await ask(rl, `  服务器 IP ${DIM}[当前: ${meta.ip || '未设置'}]${RESET}: `)
-  if (answer.trim()) {
-    meta.ip = answer.trim()
-    return renderStatus(`服务器 IP 已设置为 ${meta.ip}`)
+  const result = resolveServerIpInput(answer, meta.ip, options)
+  if (result.changed) {
+    meta.ip = result.ip
+    const prefix = result.autoDetected ? '已自动获取本机 IP' : '服务器 IP 已设置为'
+    return renderStatus(`${prefix} ${meta.ip}`)
+  }
+  if (options.autoDetectIfEmpty) {
+    return renderStatus('未输入，且无法自动获取本机 IP', 'warn')
   }
   return renderStatus('未修改', 'warn')
 }
@@ -530,7 +571,7 @@ async function serverInteractive(metaPath) {
       process.stdout.write(CLEAR)
       console.log(renderMenuHeader(meta))
       console.log(`\n  ${BOLD}首次使用，请设置服务器 IP${RESET}\n`)
-      statusMsg = await interactiveSetIp(rl, meta)
+      statusMsg = await interactiveSetIp(rl, meta, { autoDetectIfEmpty: true })
       await saveMeta(meta, metaPath)
     }
 
