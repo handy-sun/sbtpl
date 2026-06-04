@@ -5,8 +5,10 @@ import http from 'node:http'
 import https from 'node:https'
 import crypto from 'node:crypto'
 import fs from 'fs/promises';
+import { execSync } from 'node:child_process';
 
 import defaultTemplateStr from '../substore/template.json' with { type: 'json' }
+import pkg from '../package.json' with { type: 'json' }
 
 // --- 工具函数 --- [[[1
 
@@ -2562,6 +2564,7 @@ async function run() {
       'linux': isLinux,
       'icmp': isIcmp,
       'windows': IsWindows,
+      'version': version,
     },
   } = parseArgs({
     args: process.argv.slice(2),
@@ -2620,8 +2623,24 @@ async function run() {
         type: 'boolean',
         default: false,
       },
+      'version': {
+        type: 'boolean',
+        short: 'v',
+      },
     },
   })
+
+  if (version) {
+    let commit = 'unknown'
+    let dirty = false
+    try {
+      commit = execSync('git rev-parse --short HEAD', { cwd: path.dirname(new URL(import.meta.url).pathname), encoding: 'utf8' }).trim()
+      dirty = execSync('git status --porcelain', { cwd: path.dirname(new URL(import.meta.url).pathname), encoding: 'utf8' }).trim().length > 0
+    } catch {}
+    const suffix = dirty ? '-dirty' : ''
+    console.log(`sbtpl ${pkg.version} (commit: ${commit}${suffix})`)
+    process.exit(0)
+  }
 
   if (!subLink && !subscriptionFile) {
     process.exit(1)
