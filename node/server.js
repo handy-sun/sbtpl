@@ -14,6 +14,10 @@ import {
 // --- 服务端配置管理 ---
 
 const DEFAULT_META_PATH = path.join(os.homedir(), '.config/sbtpl/meta.json')
+const DEFAULT_SERVER_SETTINGS = {
+  serverLogTimestamp: false,
+  serverLogFile: '',
+}
 
 const PROTOCOL_REGISTRY = {
   vmess: {
@@ -114,20 +118,34 @@ const PROTOCOL_REGISTRY = {
 
 // --- 元数据管理 ---
 
+export function normalizeMeta(meta = {}) {
+  const settings = meta.settings || {}
+  return {
+    ...meta,
+    ip: typeof meta.ip === 'string' ? meta.ip : '',
+    protocols: Array.isArray(meta.protocols) ? meta.protocols : [],
+    settings: {
+      ...settings,
+      serverLogTimestamp: settings.serverLogTimestamp === true ? true : DEFAULT_SERVER_SETTINGS.serverLogTimestamp,
+      serverLogFile: typeof settings.serverLogFile === 'string' ? settings.serverLogFile : DEFAULT_SERVER_SETTINGS.serverLogFile,
+    },
+  }
+}
+
 async function loadMeta(metaPath) {
   const p = metaPath || DEFAULT_META_PATH
   try {
     const raw = await fs.readFile(p, 'utf-8')
-    return JSON.parse(raw)
+    return normalizeMeta(JSON.parse(raw))
   } catch {
-    return { ip: '', protocols: [] }
+    return normalizeMeta()
   }
 }
 
 async function saveMeta(meta, metaPath) {
   const p = metaPath || DEFAULT_META_PATH
   await fs.mkdir(path.dirname(p), { recursive: true })
-  await fs.writeFile(p, JSON.stringify(meta, null, 2), 'utf-8')
+  await fs.writeFile(p, JSON.stringify(normalizeMeta(meta), null, 2), 'utf-8')
   sbtplLog(`saved to ${p}`)
 }
 
@@ -222,6 +240,20 @@ function printShareLinks(meta) {
     console.log(`\n[${i + 1}. ${reg.label}]`)
     console.log(link)
   })
+}
+
+export function buildServerLog(settings = {}) {
+  const logFile = typeof settings.serverLogFile === 'string' ? settings.serverLogFile.trim() : ''
+  const log = {
+    level: 'info',
+    timestamp: settings.serverLogTimestamp === true,
+  }
+  if (logFile) log.output = logFile
+  return log
+}
+
+function nixString(value) {
+  return JSON.stringify(value)
 }
 
 async function serverAdd(protocol, values, metaPath) {
@@ -319,8 +351,9 @@ async function serverGen(metaPath, outputDir) {
     const reg = PROTOCOL_REGISTRY[entry.type]
     return reg.buildServerInbound(entry)
   })
+  const serverLog = buildServerLog(meta.settings)
   const serverConfig = {
-    log: { level: 'info', timestamp: true },
+    log: serverLog,
     inbounds,
     outbounds: [{ type: 'direct', tag: 'direct' }],
   }
@@ -369,14 +402,21 @@ async function serverGen(metaPath, outputDir) {
     return lines.join('\n')
   }).join('\n')
 
+  const nixLogLines = [
+    '        level = "info";',
+    `        timestamp = ${serverLog.timestamp ? 'true' : 'false'};`,
+  ]
+  if (serverLog.output) {
+    nixLogLines.push(`        output = ${nixString(serverLog.output)};`)
+  }
+
   const nixModule = `{ config, pkgs, ... }:
 {
   services.sing-box = {
     enable = true;
     settings = {
       log = {
-        level = "info";
-        timestamp = true;
+${nixLogLines.join('\n')}
       };
       inbounds = [
 ${nixInbounds}
@@ -560,9 +600,39 @@ async function interactiveSetIp(rl, meta, options = {}) {
   return renderStatus('未修改', 'warn')
 }
 
+async function interactiveSetServerLogTimestamp(rl, meta) {
+  const current = meta.settings.serverLogTimestamp
+  const action = await choose(rl, `服务端日志时间戳 ${DIM}[当前: ${current ? '开启' : '关闭'}]${RESET}:`, [
+    '开启',
+    '关闭',
+    '返回',
+  ])
+  if (action === null || action === 2) return null
+
+  const nextValue = action === 0
+  if (nextValue === current) return renderStatus('未修改', 'warn')
+
+  meta.settings.serverLogTimestamp = nextValue
+  return renderStatus(`服务端日志时间戳已${nextValue ? '开启' : '关闭'}`)
+}
+
+async function interactiveSetServerLogFile(rl, meta) {
+  const current = meta.settings.serverLogFile || '未设置'
+  const answer = await ask(rl, `  服务端日志文件 ${DIM}[当前: ${current}，留空清除]${RESET}: `)
+  const nextValue = answer.trim()
+
+  if (nextValue === meta.settings.serverLogFile) return renderStatus('未修改', 'warn')
+
+  meta.settings.serverLogFile = nextValue
+  if (!nextValue) return renderStatus('服务端日志文件已清除')
+  return renderStatus(`服务端日志文件已设置为 ${nextValue}`)
+}
+
 async function interactiveSoftwareSettings(rl, meta) {
   const action = await choose(rl, '软件设置:', [
     '设置服务端 IP',
+    '服务端日志时间戳',
+    '服务端日志文件',
     '返回',
   ])
 
@@ -570,6 +640,10 @@ async function interactiveSoftwareSettings(rl, meta) {
     case 0:
       return interactiveSetIp(rl, meta)
     case 1:
+      return interactiveSetServerLogTimestamp(rl, meta)
+    case 2:
+      return interactiveSetServerLogFile(rl, meta)
+    case 3:
     case null:
       return null
     default:
@@ -633,7 +707,7 @@ async function serverInteractive(metaPath) {
           break
         case 4:
           statusMsg = await interactiveSoftwareSettings(rl, meta)
-          if (statusMsg) await saveMeta(meta, metaPath)
+          if (statusMsg?.includes('已')) await saveMeta(meta, metaPath)
           break
         case 5:
           const dirAnswer = await ask(rl, `  输出目录 ${DIM}[默认: 当前目录]${RESET}: `)

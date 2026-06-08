@@ -2,7 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildServerLog,
   getLocalIpFromInterfaces,
+  normalizeMeta,
   resolveServerIpInput,
 } from '../node/server.js'
 
@@ -42,5 +44,40 @@ test('resolveServerIpInput keeps existing blank behavior outside first setup', (
     changed: false,
     ip: '203.0.113.5',
     autoDetected: false,
+  })
+})
+
+test('normalizeMeta applies default server settings for older metadata', () => {
+  const meta = normalizeMeta({
+    ip: '203.0.113.5',
+    protocols: [{ type: 'vmess' }],
+    extra: 'kept',
+    settings: { futureSetting: 'kept' },
+  })
+
+  assert.equal(meta.extra, 'kept')
+  assert.deepEqual(meta.settings, {
+    futureSetting: 'kept',
+    serverLogTimestamp: false,
+    serverLogFile: '',
+  })
+})
+
+test('buildServerLog maps software settings to server log config', () => {
+  assert.deepEqual(buildServerLog({
+    serverLogTimestamp: false,
+    serverLogFile: '',
+  }), {
+    level: 'info',
+    timestamp: false,
+  })
+
+  assert.deepEqual(buildServerLog({
+    serverLogTimestamp: true,
+    serverLogFile: ' /var/log/sing-box/server.log ',
+  }), {
+    level: 'info',
+    timestamp: true,
+    output: '/var/log/sing-box/server.log',
   })
 })
