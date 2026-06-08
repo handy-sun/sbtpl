@@ -19,6 +19,10 @@ const DEFAULT_SERVER_SETTINGS = {
   serverLogFile: '',
 }
 
+export function buildServerInboundTag(protocol, port) {
+  return `${protocol}-${port}`
+}
+
 const PROTOCOL_REGISTRY = {
   vmess: {
     label: 'VMess',
@@ -29,7 +33,7 @@ const PROTOCOL_REGISTRY = {
     ],
     buildServerInbound(entry) {
       return {
-        type: 'vmess', tag: 'vmess-in', listen: '::',
+        type: 'vmess', tag: buildServerInboundTag('vmess', entry.port), listen: '::',
         listen_port: entry.port,
         users: [{ uuid: entry.uuid }],
       }
@@ -58,7 +62,7 @@ const PROTOCOL_REGISTRY = {
     ],
     buildServerInbound(entry) {
       return {
-        type: 'trojan', tag: 'trojan-in', listen: '::',
+        type: 'trojan', tag: buildServerInboundTag('trojan', entry.port), listen: '::',
         listen_port: entry.port,
         users: [{ password: entry.password }],
         tls: {
@@ -94,7 +98,7 @@ const PROTOCOL_REGISTRY = {
     ],
     buildServerInbound(entry) {
       return {
-        type: 'shadowsocks', tag: 'ss-in', listen: '::',
+        type: 'shadowsocks', tag: buildServerInboundTag('ss', entry.port), listen: '::',
         listen_port: entry.port,
         method: entry.method,
         password: entry.password,

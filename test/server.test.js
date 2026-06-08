@@ -2,11 +2,18 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  buildServerInboundTag,
   buildServerLog,
   getLocalIpFromInterfaces,
   normalizeMeta,
   resolveServerIpInput,
 } from '../node/server.js'
+
+test('buildServerInboundTag uses protocol and port', () => {
+  assert.equal(buildServerInboundTag('vmess', 20086), 'vmess-20086')
+  assert.equal(buildServerInboundTag('trojan', 443), 'trojan-443')
+  assert.equal(buildServerInboundTag('ss', 20085), 'ss-20085')
+})
 
 test('getLocalIpFromInterfaces chooses the first non-internal IPv4 address', () => {
   const interfaces = {
