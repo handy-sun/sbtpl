@@ -455,7 +455,7 @@ function renderMenuHeader(meta) {
   lines.push(`${BOLD}║       sbtpl server 管理              ║${RESET}`)
   lines.push(`${BOLD}╚══════════════════════════════════════╝${RESET}`)
   lines.push('')
-  lines.push(`  ${DIM}服务器${RESET} ${BOLD}${meta.ip || '未设置'}${RESET}  ${DIM}协议${RESET} ${BOLD}${meta.protocols.length}${RESET}`)
+  lines.push(`  ${DIM}服务端${RESET} ${BOLD}${meta.ip || '未设置'}${RESET}  ${DIM}节点${RESET} ${BOLD}${meta.protocols.length}${RESET}`)
   if (meta.protocols.length) {
     lines.push('')
     meta.protocols.forEach((entry, i) => {
@@ -508,24 +508,24 @@ async function interactiveAdd(rl, meta) {
 }
 
 async function interactiveRemove(rl, meta) {
-  if (!meta.protocols.length) return renderStatus('没有可删除的配置', 'warn')
+  if (!meta.protocols.length) return renderStatus('没有可删除的节点', 'warn')
   const labels = meta.protocols.map((e) => {
     const reg = PROTOCOL_REGISTRY[e.type]
     return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
   })
-  const idx = await choose(rl, '选择要删除的配置:', labels)
+  const idx = await choose(rl, '选择要删除的节点:', labels)
   if (idx === null) return null
   const removed = meta.protocols.splice(idx, 1)[0]
   return renderStatus(`已删除 ${PROTOCOL_REGISTRY[removed.type]?.label || removed.type}`)
 }
 
 async function interactiveModify(rl, meta) {
-  if (!meta.protocols.length) return renderStatus('没有可修改的配置', 'warn')
+  if (!meta.protocols.length) return renderStatus('没有可修改的节点', 'warn')
   const labels = meta.protocols.map((e) => {
     const reg = PROTOCOL_REGISTRY[e.type]
     return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
   })
-  const idx = await choose(rl, '选择要修改的配置:', labels)
+  const idx = await choose(rl, '选择要修改的节点:', labels)
   if (idx === null) return null
 
   const entry = meta.protocols[idx]
@@ -547,17 +547,34 @@ async function interactiveModify(rl, meta) {
 }
 
 async function interactiveSetIp(rl, meta, options = {}) {
-  const answer = await ask(rl, `  服务器 IP ${DIM}[当前: ${meta.ip || '未设置'}]${RESET}: `)
+  const answer = await ask(rl, `  服务端 IP ${DIM}[当前: ${meta.ip || '未设置'}]${RESET}: `)
   const result = resolveServerIpInput(answer, meta.ip, options)
   if (result.changed) {
     meta.ip = result.ip
-    const prefix = result.autoDetected ? '已自动获取本机 IP' : '服务器 IP 已设置为'
+    const prefix = result.autoDetected ? '已自动获取本机 IP' : '服务端 IP 已设置为'
     return renderStatus(`${prefix} ${meta.ip}`)
   }
   if (options.autoDetectIfEmpty) {
     return renderStatus('未输入，且无法自动获取本机 IP', 'warn')
   }
   return renderStatus('未修改', 'warn')
+}
+
+async function interactiveSoftwareSettings(rl, meta) {
+  const action = await choose(rl, '软件设置:', [
+    '设置服务端 IP',
+    '返回',
+  ])
+
+  switch (action) {
+    case 0:
+      return interactiveSetIp(rl, meta)
+    case 1:
+    case null:
+      return null
+    default:
+      return renderStatus('无效选择', 'err')
+  }
 }
 
 async function serverInteractive(metaPath) {
@@ -570,7 +587,7 @@ async function serverInteractive(metaPath) {
     if (!meta.ip) {
       process.stdout.write(CLEAR)
       console.log(renderMenuHeader(meta))
-      console.log(`\n  ${BOLD}首次使用，请设置服务器 IP${RESET}\n`)
+      console.log(`\n  ${BOLD}首次使用，请设置服务端 IP${RESET}\n`)
       statusMsg = await interactiveSetIp(rl, meta, { autoDetectIfEmpty: true })
       await saveMeta(meta, metaPath)
     }
@@ -585,11 +602,11 @@ async function serverInteractive(metaPath) {
       }
 
       const action = await choose(rl, '', [
-        '添加配置',
-        '查看配置',
-        '修改配置',
-        '删除配置',
-        '设置服务器 IP',
+        '添加节点',
+        '查看节点',
+        '修改节点',
+        '删除节点',
+        '软件设置',
         '生成配置文件',
         '退出',
       ])
@@ -615,8 +632,8 @@ async function serverInteractive(metaPath) {
           if (statusMsg?.includes('已删除')) await saveMeta(meta, metaPath)
           break
         case 4:
-          statusMsg = await interactiveSetIp(rl, meta)
-          await saveMeta(meta, metaPath)
+          statusMsg = await interactiveSoftwareSettings(rl, meta)
+          if (statusMsg) await saveMeta(meta, metaPath)
           break
         case 5:
           const dirAnswer = await ask(rl, `  输出目录 ${DIM}[默认: 当前目录]${RESET}: `)
