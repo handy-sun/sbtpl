@@ -23,7 +23,7 @@ export function buildServerInboundTag(protocol, port) {
   return `${protocol}-${port}`
 }
 
-const PROTOCOL_REGISTRY = {
+export const PROTOCOL_REGISTRY = {
   vmess: {
     label: 'VMess',
     defaultPort: 20086,
@@ -58,19 +58,22 @@ const PROTOCOL_REGISTRY = {
     fields: [
       { name: 'port', type: 'number', default: 443, prompt: '端口' },
       { name: 'password', type: 'string', generate: () => generateRandomBase64(16), prompt: '密码' },
-      { name: 'domain', type: 'string', required: true, prompt: '域名 (TLS server_name)' },
+      { name: 'tlsMode', type: 'string', default: 'acme', prompt: 'TLS 模式 (acme/self-signed)' },
+      { name: 'domain', type: 'string', prompt: '域名 (TLS server_name)' },
     ],
     buildServerInbound(entry) {
+      const tls = { enabled: true, server_name: entry.domain || '' }
+      if (entry.tlsMode === 'self-signed') {
+        tls.certificate_path = '/etc/sing-box/tls.cer'
+        tls.key_path = '/etc/sing-box/tls.key'
+      } else {
+        tls.acme = { domain: [entry.domain] }
+      }
       return {
         type: 'trojan', tag: buildServerInboundTag('trojan', entry.port), listen: '::',
         listen_port: entry.port,
         users: [{ password: entry.password }],
-        tls: {
-          enabled: true,
-          server_name: entry.domain,
-          certificate_path: '/var/lib/sing-box/cert.pem',
-          key_path: '/var/lib/sing-box/priv.key',
-        },
+        tls,
       }
     },
     metaToBean(entry, ip) {
@@ -78,15 +81,19 @@ const PROTOCOL_REGISTRY = {
       bean.serverAddress = ip
       bean.serverPort = entry.port
       bean.password = entry.password
-      bean.sni = entry.domain
+      bean.sni = entry.domain || ip
       bean.security = 'tls'
+      bean.allowInsecure = entry.tlsMode === 'self-signed'
       bean.name = this.label
       return bean
     },
     summary(entry) {
-      return `port=${entry.port}  domain=${entry.domain}`
+      const parts = [`port=${entry.port}`]
+      if (entry.domain) parts.push(`domain=${entry.domain}`)
+      parts.push(`tls=${entry.tlsMode || 'acme'}`)
+      return parts.join('  ')
     },
-    editableFields: ['port', 'password', 'domain'],
+    editableFields: ['port', 'password', 'domain', 'tlsMode'],
   },
   ss: {
     label: 'SS 2022',
@@ -178,6 +185,7 @@ function parseServerArgs(argv) {
       'uuid': { type: 'string' },
       'ip': { type: 'string' },
       'meta': { type: 'string' },
+      'tls-mode': { type: 'string' },
       'output-dir': { type: 'string', short: 'o' },
     },
     strict: false,
@@ -295,6 +303,18 @@ async function serverAdd(protocol, values, metaPath) {
     }
   }
 
+  // protocol-specific validation
+  if (protocol === 'trojan') {
+    if (entry.tlsMode !== 'acme' && entry.tlsMode !== 'self-signed') {
+      sbtplErr('--tls-mode must be acme or self-signed')
+      process.exit(1)
+    }
+    if (entry.tlsMode === 'acme' && !entry.domain) {
+      sbtplErr('--domain is required when tls-mode is acme')
+      process.exit(1)
+    }
+  }
+
   meta.protocols.push(entry)
   await saveMeta(meta, metaPath)
 
@@ -397,9 +417,15 @@ async function serverGen(metaPath, outputDir) {
       lines.push(`          users = [ { password = "${ib.users[0].password}"; } ];`)
       lines.push(`          tls = {`)
       lines.push(`            enabled = true;`)
-      lines.push(`            server_name = "${ib.tls.server_name}";`)
-      lines.push(`            certificate_path = "${ib.tls.certificate_path}";`)
-      lines.push(`            key_path = "${ib.tls.key_path}";`)
+      if (ib.tls.server_name) lines.push(`            server_name = "${ib.tls.server_name}";`)
+      if (ib.tls.acme) {
+        lines.push(`            acme = {`)
+        lines.push(`              domain = [ ${ib.tls.acme.domain.map(d => `"${d}"`).join(' ')} ];`)
+        lines.push(`            };`)
+      } else {
+        if (ib.tls.certificate_path) lines.push(`            certificate_path = "${ib.tls.certificate_path}";`)
+        if (ib.tls.key_path) lines.push(`            key_path = "${ib.tls.key_path}";`)
+      }
       lines.push(`          };`)
     }
     lines.push('        }')
@@ -447,6 +473,18 @@ ${nixInbounds}
   sbtplLog(`  server-config.json`)
   sbtplLog(`  client-config.json`)
   sbtplLog(`  sing-box-server.nix`)
+
+  // TLS certificate hints
+  for (const entry of meta.protocols) {
+    if (entry.type !== 'trojan') continue
+    if (entry.tlsMode === 'acme') {
+      console.log(`\n${YELLOW}[提示]${RESET} Trojan acme 模式: 请确保 ${BOLD}${entry.domain}${RESET} 已解析到本机且 80 端口可达，sing-box 启动时会自动申请证书`)
+    } else if (entry.tlsMode === 'self-signed') {
+      console.log(`\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`)
+      console.log(`  sing-box generate tls-keypair tls -m 456`)
+      console.log(`  产出 /etc/sing-box/tls.cer + /etc/sing-box/tls.key`)
+    }
+  }
 
   printShareLinks(meta)
 }
@@ -543,6 +581,16 @@ async function interactiveAdd(rl, meta) {
       entry[field.name] = field.default
     } else if (field.required) {
       return renderStatus(`${field.prompt} 不能为空`, 'err')
+    }
+  }
+
+  // protocol-specific validation
+  if (protocol === 'trojan') {
+    if (entry.tlsMode !== 'acme' && entry.tlsMode !== 'self-signed') {
+      return renderStatus('TLS 模式必须是 acme 或 self-signed', 'err')
+    }
+    if (entry.tlsMode === 'acme' && !entry.domain) {
+      return renderStatus('acme 模式下域名不能为空', 'err')
     }
   }
 

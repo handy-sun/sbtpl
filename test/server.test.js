@@ -7,6 +7,7 @@ import {
   getLocalIpFromInterfaces,
   normalizeMeta,
   resolveServerIpInput,
+  PROTOCOL_REGISTRY,
 } from '../node/server.js'
 
 test('buildServerInboundTag uses protocol and port', () => {
@@ -87,4 +88,37 @@ test('buildServerLog maps software settings to server log config', () => {
     timestamp: true,
     output: '/var/log/sing-box/server.log',
   })
+})
+
+test('Trojan buildServerInbound with acme mode uses acme field', () => {
+  const entry = { port: 443, password: 'test', tlsMode: 'acme', domain: 'example.com' }
+  const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry)
+  assert.equal(inbound.type, 'trojan')
+  assert.deepEqual(inbound.tls, {
+    enabled: true,
+    server_name: 'example.com',
+    acme: { domain: ['example.com'] },
+  })
+})
+
+test('Trojan buildServerInbound with self-signed mode uses certificate paths', () => {
+  const entry = { port: 443, password: 'test', tlsMode: 'self-signed', domain: 'example.com' }
+  const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry)
+  assert.equal(inbound.type, 'trojan')
+  assert.deepEqual(inbound.tls, {
+    enabled: true,
+    server_name: 'example.com',
+    certificate_path: '/etc/sing-box/tls.cer',
+    key_path: '/etc/sing-box/tls.key',
+  })
+})
+
+test('Trojan metaToBean sets allowInsecure for self-signed mode', () => {
+  const entrySelfSigned = { port: 443, password: 'test', tlsMode: 'self-signed', domain: 'example.com' }
+  const bean1 = PROTOCOL_REGISTRY.trojan.metaToBean(entrySelfSigned, '1.2.3.4')
+  assert.equal(bean1.allowInsecure, true)
+
+  const entryAcme = { port: 443, password: 'test', tlsMode: 'acme', domain: 'example.com' }
+  const bean2 = PROTOCOL_REGISTRY.trojan.metaToBean(entryAcme, '1.2.3.4')
+  assert.equal(bean2.allowInsecure, false)
 })
