@@ -131,36 +131,8 @@
     "final": "🌐Proxy",
     "rules": [
       {
-        "action": "sniff",
-        "timeout": "200ms"
-      },
-      {
-        "type": "logical",
-        "mode": "or",
-        "rules": [
-          {
-            "protocol": "dns"
-          },
-          {
-            "port": 53
-          }
-        ],
-        "action": "hijack-dns"
-      },
-      {
         "strategy": "prefer_ipv4",
         "action": "resolve"
-      },
-      {
-        "source_ip_cidr": [
-          "224.0.0.0/3",
-          "ff00::/8"
-        ],
-        "ip_cidr": [
-          "224.0.0.0/3",
-          "ff00::/8"
-        ],
-        "action": "reject"
       },
       {
         "type": "logical",
@@ -175,13 +147,6 @@
           }
         ],
         "action": "reject"
-      },
-      {
-        "protocol": [
-          "bittorrent",
-          "stun"
-        ],
-        "outbound": "🎯Direct"
       },
       {
         "clash_mode": "Global",
