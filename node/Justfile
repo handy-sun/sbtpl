@@ -4,7 +4,7 @@ set shell := ["bash", "-uc"]
 
 subLine := "http://handyMini:3001/c53248f264d9997/download/collection/main?target=URI"
 
-policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网|Rfchost(.+)Anytls|kooya|\\]日本)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
+policy-filter := "@🌐Proxy@⚡UrlTest-~^(?!.*(流量|到期|过滤|官网|Rfchost(.+)Anytls|kooya|\\]日本)).*$@💬AI-~^(?!.*(流量|到期|过滤|官网)).*$@🚀LowLatency-~^(?!.*(流量|到期|过滤|官网)).*$"
 
 alias b := tun
 
@@ -24,10 +24,13 @@ tun:
   node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp -o config.json
 
 windows-tun:
-  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp --windows --log-file '' -o windows-tun.json
+  node base.js -s '{{subLine}}' -p '{{policy-filter}}' --tun --icmp --windows -o windows-tun.json
 
 singb:
-  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --log-file '' --icmp -o singb.json
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp -o singb.json
+
+lreal-notun:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp --template '../substore/real-dns.json' -o lreal-notun.json
 
 notun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --icmp -o inotun.json
