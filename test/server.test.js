@@ -263,6 +263,7 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first A
       listen_port: 443,
       users: [{ password: 'trojan-secret' }],
       tls: {
+        enabled: true,
         server_name: 'server-name.example',
         acme: { domain: ['acme.example'] },
       },
@@ -294,6 +295,26 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first A
     tlsMode: 'acme',
     domain: 'first.example',
   })
+})
+
+test('importServerConfig requires Trojan tls.enabled to be boolean true', () => {
+  const tlsCases = [
+    { acme: { domain: ['missing.example'] } },
+    { enabled: null, acme: { domain: ['null.example'] } },
+    { enabled: 1, acme: { domain: ['number.example'] } },
+    { enabled: 'true', acme: { domain: ['string.example'] } },
+  ]
+
+  for (const tls of tlsCases) {
+    assert.throws(() => importServerConfig({
+      inbounds: [{
+        type: 'trojan',
+        listen_port: 443,
+        users: [{ password: 'trojan-secret' }],
+        tls,
+      }],
+    }, {}), /inbound 0.*tls\.enabled.*true/i)
+  }
 })
 
 test('importServerConfig validates root, inbound, TLS, and log shapes', () => {
@@ -330,6 +351,7 @@ test('importServerConfig validates root, inbound, TLS, and log shapes', () => {
         inbounds: [{
           type: 'trojan', listen_port: 443, users: [{ password: 'secret' }],
           tls: {
+            enabled: true,
             acme: { domain: ['example.com'] },
             certificate_path: '/srv/tls/server.crt',
             key_path: '/srv/tls/server.key',

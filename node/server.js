@@ -177,8 +177,8 @@ function importTrojanTls(tls, index) {
   if (!isPlainObject(tls)) {
     throw new Error(`inbound ${index} tls must be an object`)
   }
-  if (tls.enabled === false) {
-    throw new Error(`inbound ${index} tls.enabled must not be false`)
+  if (tls.enabled !== true) {
+    throw new Error(`inbound ${index} tls.enabled must be true`)
   }
 
   const hasAcme = Object.hasOwn(tls, 'acme')
