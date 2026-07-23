@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 import {
   buildNixServerModule,
@@ -13,6 +16,18 @@ import {
   resolveServerIpInput,
   PROTOCOL_REGISTRY,
 } from '../node/server.js'
+
+const serverScript = path.resolve('node/server.js')
+
+async function withTempDir(t) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-test-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  return dir
+}
+
+function runServer(...args) {
+  return spawnSync(process.execPath, [serverScript, ...args], { encoding: 'utf8' })
+}
 
 test('buildServerInboundTag uses protocol and port', () => {
   assert.equal(buildServerInboundTag('vmess', 20086), 'vmess-20086')
@@ -546,6 +561,187 @@ test('importServerConfig defaults absent log settings instead of retaining old v
     serverLogFile: '',
     futureSetting: 'kept',
   })
+})
+
+test('server -i imports supported inbounds, warns for skipped ones, and preserves unrelated metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  await writeFile(metaPath, JSON.stringify({
+    ip: '203.0.113.10',
+    protocols: [{ type: 'vmess', port: 1, uuid: 'old-uuid' }],
+    settings: {
+      serverLogLevel: 'error',
+      serverLogTimestamp: false,
+      serverLogFile: '/tmp/old.log',
+      futureSetting: 'kept',
+    },
+    extra: 'kept',
+  }))
+  await writeFile(importPath, JSON.stringify({
+    log: {
+      level: 'warn',
+      timestamp: true,
+      output: '/var/log/sing-box/server.log',
+    },
+    inbounds: [
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+      },
+      { type: 'http', listen_port: 8080 },
+    ],
+  }))
+
+  const result = runServer('-i', importPath, '--meta', metaPath)
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /imported 1 supported inbound/i)
+  assert.match(result.stdout + result.stderr, /inbound 1.*unsupported.*http/i)
+  assert.match(result.stdout, /skipped 1 unsupported inbound/i)
+  const saved = JSON.parse(await readFile(metaPath, 'utf8'))
+  assert.deepEqual(saved.protocols, [{
+    type: 'vmess',
+    port: 20086,
+    uuid: '11111111-2222-3333-4444-555555555555',
+  }])
+  assert.equal(saved.ip, '203.0.113.10')
+  assert.equal(saved.extra, 'kept')
+  assert.deepEqual(saved.settings, {
+    serverLogLevel: 'warn',
+    serverLogTimestamp: true,
+    serverLogFile: '/var/log/sing-box/server.log',
+    futureSetting: 'kept',
+  })
+})
+
+test('server --import accepts the long flag and hints when server IP is empty', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'shadowsocks',
+      listen_port: 20085,
+      method: '2022-blake3-aes-256-gcm',
+      password: 'shadowsocks-secret',
+    }],
+  }))
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /imported 1 supported inbound/i)
+  assert.match(result.stdout, /sbtpl server set --ip <addr>/i)
+  const saved = JSON.parse(await readFile(metaPath, 'utf8'))
+  assert.deepEqual(saved.protocols, [{
+    type: 'ss',
+    port: 20085,
+    method: '2022-blake3-aes-256-gcm',
+    password: 'shadowsocks-secret',
+  }])
+})
+
+test('server import read and JSON failures preserve metadata bytes', async (t) => {
+  const dir = await withTempDir(t)
+  const metaPath = path.join(dir, 'meta.json')
+  const invalidJsonPath = path.join(dir, 'invalid.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","extra":"unchanged"}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(invalidJsonPath, '{"password":"credential-must-not-leak",')
+
+  const cases = [
+    {
+      importPath: path.join(dir, 'missing.json'),
+      message: /missing\.json/i,
+    },
+    {
+      importPath: invalidJsonPath,
+      message: /invalid JSON.*invalid\.json/i,
+    },
+  ]
+
+  for (const { importPath, message } of cases) {
+    const result = runServer('--import', importPath, '--meta', metaPath)
+    const output = result.stdout + result.stderr
+
+    assert.notEqual(result.status, 0)
+    assert.match(output, message)
+    assert.doesNotMatch(output, /credential-must-not-leak/)
+    assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+    assert.deepEqual(await readFile(metaPath), originalMeta)
+  }
+})
+
+test('server import does not replace malformed existing metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10",')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'credential-must-not-leak' }],
+    }],
+  }))
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+  const output = result.stdout + result.stderr
+
+  assert.notEqual(result.status, 0)
+  assert.match(output, /could not load metadata.*meta\.json/i)
+  assert.doesNotMatch(output, /credential-must-not-leak/)
+  assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+})
+
+test('server import failure is concise, hides credentials, and preserves metadata bytes', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10", "extra":"byte-for-byte"}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: { value: 'credential-must-not-leak' } }],
+    }],
+  }))
+
+  const result = runServer('-i', importPath, '--meta', metaPath)
+
+  assert.notEqual(result.status, 0)
+  const output = result.stdout + result.stderr
+  assert.match(output, /inbound 0.*uuid/i)
+  assert.doesNotMatch(output, /credential-must-not-leak/)
+  assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+})
+
+test('server rejects combining a subcommand with --import without writing metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+
+  const result = runServer('list', '--import', importPath, '--meta', metaPath)
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
+  assert.doesNotMatch(result.stdout + result.stderr, /\n\s+at\s|node:internal|file:\/\//i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
 })
 
 test('Trojan buildServerInbound with acme mode uses acme field', () => {

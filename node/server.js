@@ -338,12 +338,15 @@ export function importServerConfig(config, currentMeta = {}) {
   return { meta, warnings }
 }
 
-async function loadMeta(metaPath) {
+async function loadMeta(metaPath, options = {}) {
   const p = metaPath || DEFAULT_META_PATH
   try {
     const raw = await fs.readFile(p, 'utf-8')
     return normalizeMeta(JSON.parse(raw))
-  } catch {
+  } catch (error) {
+    if (options.strict && error?.code !== 'ENOENT') {
+      throw new Error(`could not load metadata ${p}`)
+    }
     return normalizeMeta()
   }
 }
@@ -380,6 +383,7 @@ function parseServerArgs(argv) {
       'uuid': { type: 'string' },
       'ip': { type: 'string' },
       'meta': { type: 'string' },
+      'import': { type: 'string', short: 'i' },
       'tls-mode': { type: 'string' },
       'output-dir': { type: 'string', short: 'o' },
     },
@@ -687,6 +691,28 @@ async function serverGen(metaPath, outputDir) {
   }
 
   printShareLinks(meta)
+}
+
+export async function serverImport(importPath, metaPath) {
+  const raw = await fs.readFile(importPath, 'utf-8')
+  let config
+  try {
+    config = JSON.parse(raw)
+  } catch {
+    throw new Error(`invalid JSON in ${importPath}`)
+  }
+
+  const currentMeta = await loadMeta(metaPath, { strict: true })
+  const { meta, warnings } = importServerConfig(config, currentMeta)
+  await saveMeta(meta, metaPath)
+
+  for (const warning of warnings) {
+    console.warn(`[sbtpl.Warning] ${warning}`)
+  }
+  sbtplLog(`imported ${meta.protocols.length} supported inbound(s); skipped ${warnings.length} unsupported inbound(s)`)
+  if (!meta.ip) {
+    sbtplLog('server IP is empty; run: sbtpl server set --ip <addr>')
+  }
 }
 
 // --- 交互式菜单 ---
@@ -1009,7 +1035,11 @@ const isMainModule = (() => {
 })()
 
 if (isMainModule) {
-  serverDispatch(process.argv.slice(2))
+  serverDispatch(process.argv.slice(2)).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error)
+    sbtplErr(message)
+    process.exitCode = 1
+  })
 }
 
 // --- server 命令分发 ---
@@ -1017,6 +1047,14 @@ if (isMainModule) {
 export async function serverDispatch(argv) {
   const args = parseServerArgs(argv)
   const metaPath = getMetaPath(args.values)
+
+  if (args.values.import !== undefined) {
+    if (args.command) {
+      throw new Error('--import cannot be combined with a server subcommand')
+    }
+    await serverImport(args.values.import, metaPath)
+    return
+  }
 
   switch (args.command) {
     case 'add':
