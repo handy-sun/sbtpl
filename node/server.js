@@ -20,6 +20,20 @@ const DEFAULT_SERVER_SETTINGS = {
   serverLogTimestamp: false,
   serverLogFile: '',
 }
+const SUPPORTED_SERVER_LOG_LEVELS = new Set([
+  'trace', 'debug', 'info', 'warn', 'warning', 'error', 'fatal', 'panic',
+])
+const SHADOWSOCKS_METHOD_KEY_LENGTHS = new Map([
+  ['2022-blake3-aes-128-gcm', 16],
+  ['2022-blake3-aes-256-gcm', 32],
+  ['2022-blake3-chacha20-poly1305', 32],
+  ['none', null],
+  ['aes-128-gcm', null],
+  ['aes-192-gcm', null],
+  ['aes-256-gcm', null],
+  ['chacha20-ietf-poly1305', null],
+  ['xchacha20-ietf-poly1305', null],
+])
 
 export function buildServerInboundTag(protocol, port) {
   return `${protocol}-${port}`
@@ -191,10 +205,6 @@ function requireImportedString(value, field, options = {}) {
   return value
 }
 
-function requireNonEmptyString(value, field) {
-  return requireImportedString(value, field)
-}
-
 function importInboundPort(inbound, index) {
   const port = inbound.listen_port
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -211,7 +221,7 @@ function importSingleUserCredential(inbound, index, credential) {
   if (!isPlainObject(user)) {
     throw new Error(`inbound ${index} users[0] must be an object`)
   }
-  return requireNonEmptyString(user[credential], `inbound ${index} users[0].${credential}`)
+  return requireImportedString(user[credential], `inbound ${index} users[0].${credential}`)
 }
 
 function importTrojanTls(tls, index) {
@@ -229,9 +239,10 @@ function importTrojanTls(tls, index) {
     throw new Error(`inbound ${index} has mixed ACME and certificate TLS modes`)
   }
 
-  const serverName = Object.hasOwn(tls, 'server_name')
-    ? requireNonEmptyString(tls.server_name, `inbound ${index} tls.server_name`)
-    : ''
+  let serverName = ''
+  if (Object.hasOwn(tls, 'server_name') && tls.server_name !== '') {
+    serverName = requireImportedString(tls.server_name, `inbound ${index} tls.server_name`)
+  }
 
   if (hasAcme) {
     if (!isPlainObject(tls.acme)) {
@@ -243,8 +254,11 @@ function importTrojanTls(tls, index) {
     if (tls.acme.domain.length === 0) {
       throw new Error(`inbound ${index} tls.acme.domain must contain a non-empty string`)
     }
+    if (tls.acme.domain.length !== 1) {
+      throw new Error(`inbound ${index} tls.acme.domain must contain exactly one domain`)
+    }
     tls.acme.domain.forEach((domain, domainIndex) => {
-      requireNonEmptyString(domain, `inbound ${index} tls.acme.domain[${domainIndex}]`)
+      requireImportedString(domain, `inbound ${index} tls.acme.domain[${domainIndex}]`)
     })
     const acmeDomain = tls.acme.domain[0]
     const domain = serverName || acmeDomain
@@ -254,8 +268,8 @@ function importTrojanTls(tls, index) {
   if (!hasCertificate && !hasKey) {
     throw new Error(`inbound ${index} tls must use ACME or certificate_path with key_path`)
   }
-  const certificatePath = requireNonEmptyString(tls.certificate_path, `inbound ${index} tls.certificate_path`)
-  const keyPath = requireNonEmptyString(tls.key_path, `inbound ${index} tls.key_path`)
+  const certificatePath = requireImportedString(tls.certificate_path, `inbound ${index} tls.certificate_path`)
+  const keyPath = requireImportedString(tls.key_path, `inbound ${index} tls.key_path`)
   return {
     tlsMode: 'self-signed',
     domain: serverName,
@@ -274,7 +288,10 @@ function importServerLog(log) {
 
   const imported = { level: 'info', timestamp: false, output: '' }
   if (Object.hasOwn(log, 'level')) {
-    imported.level = requireNonEmptyString(log.level, 'log.level')
+    imported.level = requireImportedString(log.level, 'log.level').trim()
+    if (!SUPPORTED_SERVER_LOG_LEVELS.has(imported.level)) {
+      throw new Error('log.level must be one of trace, debug, info, warn, warning, error, fatal, or panic')
+    }
   }
   if (Object.hasOwn(log, 'timestamp')) {
     if (typeof log.timestamp !== 'boolean') {
@@ -286,6 +303,22 @@ function importServerLog(log) {
     imported.output = requireImportedString(log.output, 'log.output', { allowEmpty: true })
   }
   return imported
+}
+
+function importShadowsocksCredentials(inbound, index) {
+  const method = requireImportedString(inbound.method, `inbound ${index} method`)
+  const password = requireImportedString(inbound.password, `inbound ${index} password`)
+  const keyLength = SHADOWSOCKS_METHOD_KEY_LENGTHS.get(method)
+  if (keyLength === undefined) {
+    throw new Error(`inbound ${index} method is unsupported`)
+  }
+  if (keyLength !== null) {
+    const decoded = Buffer.from(password, 'base64')
+    if (decoded.length !== keyLength || decoded.toString('base64') !== password) {
+      throw new Error(`inbound ${index} password must be a valid ${keyLength}-byte base64 key`)
+    }
+  }
+  return { method, password }
 }
 
 export function importServerConfig(config, currentMeta = {}) {
@@ -350,8 +383,7 @@ export function importServerConfig(config, currentMeta = {}) {
     protocols.push({
       type: 'ss',
       port,
-      method: requireNonEmptyString(inbound.method, `inbound ${index} method`),
-      password: requireNonEmptyString(inbound.password, `inbound ${index} password`),
+      ...importShadowsocksCredentials(inbound, index),
     })
   })
 

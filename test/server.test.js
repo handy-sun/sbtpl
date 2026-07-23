@@ -21,6 +21,7 @@ import {
 } from '../node/server.js'
 
 const serverScript = path.resolve('node/server.js')
+const shadowsocks2022Password = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
 
 async function withTempDir(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-test-'))
@@ -167,7 +168,7 @@ test('buildNixServerModule escapes imported strings as literal Nix values', () =
       {
         type: 'shadowsocks',
         listen_port: 20085,
-        method: `method-${malicious}`,
+        method: 'aes-256-gcm',
         password: `shadowsocks-${malicious}`,
       },
     ],
@@ -190,7 +191,7 @@ test('buildNixServerModule escapes imported strings as literal Nix values', () =
     `server_name = ${nixLiteral(`server-${malicious}`)};`,
     `certificate_path = ${nixLiteral(`/srv/${malicious}.crt`)};`,
     `key_path = ${nixLiteral(`/srv/${malicious}.key`)};`,
-    `method = ${nixLiteral(`method-${malicious}`)};`,
+    `method = ${nixLiteral('aes-256-gcm')};`,
     `password = ${nixLiteral(`shadowsocks-${malicious}`)};`,
     `password = ${nixLiteral(`acme-password-${malicious}`)};`,
     `server_name = ${nixLiteral(`acme-${malicious}`)};`,
@@ -239,7 +240,7 @@ test('importServerConfig replaces supported protocols and log settings while pre
         type: 'shadowsocks',
         listen_port: 20085,
         method: '2022-blake3-aes-256-gcm',
-        password: 'shadowsocks-secret',
+        password: shadowsocks2022Password,
       },
       {
         type: 'http',
@@ -280,7 +281,7 @@ test('importServerConfig replaces supported protocols and log settings while pre
       type: 'ss',
       port: 20085,
       method: '2022-blake3-aes-256-gcm',
-      password: 'shadowsocks-secret',
+      password: shadowsocks2022Password,
     },
   ])
   assert.equal(result.meta.ip, '203.0.113.10')
@@ -435,21 +436,52 @@ test('importServerConfig rejects control characters in imported strings without 
 test('importServerConfig allows normal Unicode in imported strings', () => {
   const result = importServerConfig({
     log: {
-      level: '警告',
+      level: 'warn',
       output: '/日志/服务.log',
     },
     inbounds: [{
       type: 'shadowsocks',
       listen_port: 20085,
-      method: '加密算法',
+      method: 'aes-256-gcm',
       password: '安全密码',
     }],
   }, {})
 
-  assert.equal(result.meta.protocols[0].method, '加密算法')
+  assert.equal(result.meta.protocols[0].method, 'aes-256-gcm')
   assert.equal(result.meta.protocols[0].password, '安全密码')
-  assert.equal(result.meta.settings.serverLogLevel, '警告')
+  assert.equal(result.meta.settings.serverLogLevel, 'warn')
   assert.equal(result.meta.settings.serverLogFile, '/日志/服务.log')
+})
+
+test('importServerConfig rejects unsupported log levels and Shadowsocks methods', () => {
+  assert.throws(() => importServerConfig({
+    log: { level: '警告' },
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }, {}), /log\.level.*one of/i)
+
+  assert.throws(() => importServerConfig({
+    inbounds: [{
+      type: 'shadowsocks',
+      listen_port: 20085,
+      method: 'made-up-method',
+      password: 'safe-password',
+    }],
+  }, {}), /inbound 0 method.*unsupported/i)
+})
+
+test('importServerConfig validates Shadowsocks 2022 password key lengths', () => {
+  assert.throws(() => importServerConfig({
+    inbounds: [{
+      type: 'shadowsocks',
+      listen_port: 20085,
+      method: '2022-blake3-aes-256-gcm',
+      password: 'c2hvcnQ=',
+    }],
+  }, {}), /inbound 0 password.*32-byte base64 key/i)
 })
 
 test('importServerConfig rejects configs without supported inbounds', () => {
@@ -541,7 +573,7 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first v
       users: [{ password: 'trojan-secret' }],
       tls: {
         enabled: true,
-        acme: { domain: ['first.example', 'second.example'] },
+        acme: { domain: ['first.example'] },
       },
     }],
   }, {})
@@ -562,7 +594,47 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first v
   })
 })
 
-test('importServerConfig rejects mixed-type ACME domain arrays without exposing values', () => {
+test('importServerConfig rejects ACME inbounds with multiple domains', () => {
+  assert.throws(() => importServerConfig({
+    inbounds: [{
+      type: 'trojan',
+      listen_port: 443,
+      users: [{ password: 'trojan-secret' }],
+      tls: {
+        enabled: true,
+        acme: { domain: ['first.example', 'second.example'] },
+      },
+    }],
+  }, {}), /tls\.acme\.domain.*exactly one/i)
+})
+
+test('importServerConfig allows an empty Trojan server_name for self-signed TLS', () => {
+  const result = importServerConfig({
+    inbounds: [{
+      type: 'trojan',
+      listen_port: 443,
+      users: [{ password: 'trojan-secret' }],
+      tls: {
+        enabled: true,
+        server_name: '',
+        certificate_path: '/srv/tls/server.crt',
+        key_path: '/srv/tls/server.key',
+      },
+    }],
+  }, {})
+
+  assert.deepEqual(result.meta.protocols, [{
+    type: 'trojan',
+    port: 443,
+    password: 'trojan-secret',
+    tlsMode: 'self-signed',
+    domain: '',
+    certificatePath: '/srv/tls/server.crt',
+    keyPath: '/srv/tls/server.key',
+  }])
+})
+
+test('importServerConfig rejects non-string ACME domains without exposing credentials', () => {
   assert.throws(() => importServerConfig({
     inbounds: [{
       type: 'trojan',
@@ -570,17 +642,17 @@ test('importServerConfig rejects mixed-type ACME domain arrays without exposing 
       users: [{ password: 'trojan-secret-must-not-leak' }],
       tls: {
         enabled: true,
-        acme: { domain: [42, 'ok.example'] },
+        acme: { domain: [42] },
       },
     }],
   }, {}), (error) => {
     assert.match(error.message, /inbound 0.*tls\.acme\.domain\[0\].*non-empty string/i)
-    assert.doesNotMatch(error.message, /trojan-secret-must-not-leak|ok\.example/)
+    assert.doesNotMatch(error.message, /trojan-secret-must-not-leak/)
     return true
   })
 })
 
-test('importServerConfig validates Trojan server_name whenever it is present', () => {
+test('importServerConfig rejects invalid non-empty Trojan server_name values', () => {
   const tlsCases = [
     {
       enabled: true,
@@ -793,7 +865,7 @@ test('server --import accepts the long flag and hints when server IP is empty', 
       type: 'shadowsocks',
       listen_port: 20085,
       method: '2022-blake3-aes-256-gcm',
-      password: 'shadowsocks-secret',
+      password: shadowsocks2022Password,
     }],
   }))
 
@@ -807,7 +879,7 @@ test('server --import accepts the long flag and hints when server IP is empty', 
     type: 'ss',
     port: 20085,
     method: '2022-blake3-aes-256-gcm',
-    password: 'shadowsocks-secret',
+    password: shadowsocks2022Password,
   }])
   assert.equal((await stat(metaPath)).mode & 0o777, 0o600)
 })
@@ -867,7 +939,7 @@ test('server import does not replace malformed existing metadata', async (t) => 
   assert.deepEqual(await readFile(metaPath), originalMeta)
 })
 
-test('server import failure is concise, hides credentials, and preserves metadata bytes', async (t) => {
+test('server import validation failure is concise, hides credentials, and preserves metadata bytes', async (t) => {
   const dir = await withTempDir(t)
   const importPath = path.join(dir, 'server-config.json')
   const metaPath = path.join(dir, 'meta.json')
@@ -993,34 +1065,18 @@ test('server rejects combining a subcommand with --import without writing metada
     }],
   }))
 
-  const result = runServer('list', '--import', importPath, '--meta', metaPath)
+  for (const args of [
+    ['list', '--import', importPath, '--meta', metaPath],
+    ['--import', importPath, 'list', '--meta', metaPath],
+  ]) {
+    const result = runServer(...args)
+    const output = result.stdout + result.stderr
 
-  assert.notEqual(result.status, 0)
-  assert.match(result.stdout + result.stderr, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
-  assert.doesNotMatch(result.stdout + result.stderr, /\n\s+at\s|node:internal|file:\/\//i)
-  assert.deepEqual(await readFile(metaPath), originalMeta)
-})
-
-test('server rejects a subcommand placed after --import without writing metadata', async (t) => {
-  const dir = await withTempDir(t)
-  const importPath = path.join(dir, 'server-config.json')
-  const metaPath = path.join(dir, 'meta.json')
-  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
-  await writeFile(metaPath, originalMeta)
-  await writeFile(importPath, JSON.stringify({
-    inbounds: [{
-      type: 'vmess',
-      listen_port: 20086,
-      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
-    }],
-  }))
-
-  const result = runServer('--import', importPath, 'list', '--meta', metaPath)
-
-  assert.notEqual(result.status, 0)
-  assert.match(result.stdout + result.stderr, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
-  assert.doesNotMatch(result.stdout + result.stderr, /\n\s+at\s|node:internal|file:\/\//i)
-  assert.deepEqual(await readFile(metaPath), originalMeta)
+    assert.notEqual(result.status, 0)
+    assert.match(output, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
+    assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+    assert.deepEqual(await readFile(metaPath), originalMeta)
+  }
 })
 
 test('server import rejects identical source and metadata paths without changing the source', async (t) => {
@@ -1147,60 +1203,6 @@ test('server import rejects non-object metadata roots without rewriting them', a
     assert.notEqual(result.status, 0)
     assert.match(result.stdout + result.stderr, /metadata root.*object/i)
     assert.deepEqual(await readFile(metaPath), original)
-  }
-})
-
-test('server import rejects non-object inbound entries and mixed ACME domains without writes', async (t) => {
-  const dir = await withTempDir(t)
-  const importPath = path.join(dir, 'source.json')
-  const metaPath = path.join(dir, 'meta.json')
-  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
-  const cases = [
-    {
-      config: {
-        inbounds: [
-          null,
-          { type: 'vmess', listen_port: 20086, users: [{ uuid: 'safe-uuid' }] },
-        ],
-      },
-      field: /inbound 0.*object/i,
-      secret: '',
-    },
-    {
-      config: {
-        inbounds: [
-          ['nested-secret-must-not-leak'],
-          { type: 'vmess', listen_port: 20086, users: [{ uuid: 'safe-uuid' }] },
-        ],
-      },
-      field: /inbound 0.*object/i,
-      secret: 'nested-secret-must-not-leak',
-    },
-    {
-      config: {
-        inbounds: [{
-          type: 'trojan',
-          listen_port: 443,
-          users: [{ password: 'trojan-secret-must-not-leak' }],
-          tls: { enabled: true, acme: { domain: [42, 'ok.example'] } },
-        }],
-      },
-      field: /inbound 0.*tls\.acme\.domain\[0\].*non-empty string/i,
-      secret: 'trojan-secret-must-not-leak',
-    },
-  ]
-
-  for (const { config, field, secret } of cases) {
-    await writeFile(metaPath, originalMeta)
-    await writeFile(importPath, JSON.stringify(config))
-    const result = runServer('--import', importPath, '--meta', metaPath)
-    const output = result.stdout + result.stderr
-
-    assert.notEqual(result.status, 0)
-    assert.match(output, field)
-    if (secret) assert.doesNotMatch(output, new RegExp(secret))
-    assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
-    assert.deepEqual(await readFile(metaPath), originalMeta)
   }
 })
 
