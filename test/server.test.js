@@ -1,7 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 
 import {
+  buildNixServerModule,
+  buildSelfSignedTlsGuidance,
   buildServerInboundTag,
   buildServerLog,
   getLocalIpFromInterfaces,
@@ -99,6 +102,95 @@ test('buildServerLog maps software settings to server log config', () => {
     timestamp: true,
     output: '/var/log/sing-box/server.log',
   })
+})
+
+test('buildNixServerModule preserves an imported server log level', () => {
+  const { meta } = importServerConfig({
+    log: { level: 'warn', timestamp: true },
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }, {})
+  const inbounds = meta.protocols.map(entry => PROTOCOL_REGISTRY[entry.type].buildServerInbound(entry))
+
+  const nixModule = buildNixServerModule(inbounds, buildServerLog(meta.settings))
+
+  assert.match(nixModule, /level = "warn";/)
+  assert.match(nixModule, /timestamp = true;/)
+})
+
+test('buildNixServerModule escapes imported strings as literal Nix values', () => {
+  const malicious = 'quote" slash\\ payload ${builtins.abort "pwn"}'
+  const { meta } = importServerConfig({
+    log: {
+      level: 'warn',
+      timestamp: true,
+      output: `/var/log/${malicious}`,
+    },
+    inbounds: [
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: `vmess-${malicious}` }],
+      },
+      {
+        type: 'trojan',
+        listen_port: 443,
+        users: [{ password: `trojan-${malicious}` }],
+        tls: {
+          enabled: true,
+          server_name: `server-${malicious}`,
+          certificate_path: `/srv/${malicious}.crt`,
+          key_path: `/srv/${malicious}.key`,
+        },
+      },
+      {
+        type: 'shadowsocks',
+        listen_port: 20085,
+        method: `method-${malicious}`,
+        password: `shadowsocks-${malicious}`,
+      },
+    ],
+  }, {})
+  const inbounds = meta.protocols.map(entry => PROTOCOL_REGISTRY[entry.type].buildServerInbound(entry))
+  inbounds[0].tag = `tag-${malicious}`
+  inbounds.push(PROTOCOL_REGISTRY.trojan.buildServerInbound({
+    port: 8443,
+    password: `acme-password-${malicious}`,
+    tlsMode: 'acme',
+    domain: `acme-${malicious}`,
+  }))
+
+  const nixModule = buildNixServerModule(inbounds, buildServerLog(meta.settings))
+  const nixLiteral = value => JSON.stringify(value).replaceAll('${', '\\${')
+  const expectedAssignments = [
+    `tag = ${nixLiteral(`tag-${malicious}`)};`,
+    `uuid = ${nixLiteral(`vmess-${malicious}`)};`,
+    `password = ${nixLiteral(`trojan-${malicious}`)};`,
+    `server_name = ${nixLiteral(`server-${malicious}`)};`,
+    `certificate_path = ${nixLiteral(`/srv/${malicious}.crt`)};`,
+    `key_path = ${nixLiteral(`/srv/${malicious}.key`)};`,
+    `method = ${nixLiteral(`method-${malicious}`)};`,
+    `password = ${nixLiteral(`shadowsocks-${malicious}`)};`,
+    `password = ${nixLiteral(`acme-password-${malicious}`)};`,
+    `server_name = ${nixLiteral(`acme-${malicious}`)};`,
+    `domain = [ ${nixLiteral(`acme-${malicious}`)} ];`,
+    `output = ${nixLiteral(`/var/log/${malicious}`)};`,
+  ]
+
+  for (const assignment of expectedAssignments) {
+    assert.ok(nixModule.includes(assignment), `missing escaped Nix assignment: ${assignment}`)
+  }
+  assert.doesNotMatch(nixModule, /(?<!\\)\$\{builtins\.abort/)
+
+  const nixVersion = spawnSync('nix-instantiate', ['--version'], { encoding: 'utf8' })
+  if (nixVersion.error?.code !== 'ENOENT') {
+    assert.equal(nixVersion.status, 0, nixVersion.stderr)
+    const parsed = spawnSync('nix-instantiate', ['--parse', '--expr', nixModule], { encoding: 'utf8' })
+    assert.equal(parsed.status, 0, parsed.stderr)
+  }
 })
 
 test('importServerConfig replaces supported protocols and log settings while preserving unrelated metadata', () => {
@@ -496,6 +588,29 @@ test('Trojan buildServerInbound preserves custom self-signed certificate paths',
     certificate_path: '/srv/tls/server.crt',
     key_path: '/srv/tls/server.key',
   })
+})
+
+test('self-signed TLS guidance reports the effective certificate paths', () => {
+  const customGuidance = buildSelfSignedTlsGuidance({
+    port: 443,
+    password: 'test',
+    tlsMode: 'self-signed',
+    domain: 'example.com',
+    certificatePath: '/srv/tls/server.crt',
+    keyPath: '/srv/tls/server.key',
+  })
+  assert.match(customGuidance, /\/srv\/tls\/server\.crt/)
+  assert.match(customGuidance, /\/srv\/tls\/server\.key/)
+  assert.doesNotMatch(customGuidance, /\/etc\/sing-box\/tls\.(cer|key)/)
+
+  const defaultGuidance = buildSelfSignedTlsGuidance({
+    port: 443,
+    password: 'test',
+    tlsMode: 'self-signed',
+    domain: 'example.com',
+  })
+  assert.match(defaultGuidance, /\/etc\/sing-box\/tls\.cer/)
+  assert.match(defaultGuidance, /\/etc\/sing-box\/tls\.key/)
 })
 
 test('Trojan metaToBean sets allowInsecure for self-signed mode', () => {

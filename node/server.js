@@ -463,7 +463,69 @@ export function buildServerLog(settings = {}) {
 }
 
 function nixString(value) {
-  return JSON.stringify(value)
+  return JSON.stringify(value).replaceAll('${', '\\${')
+}
+
+export function buildNixServerModule(inbounds, serverLog) {
+  const nixInbounds = inbounds.map(ib => {
+    const lines = ['        {']
+    lines.push(`          type = ${nixString(ib.type)};`)
+    lines.push(`          tag = ${nixString(ib.tag)};`)
+    lines.push(`          listen = ${nixString(ib.listen)};`)
+    lines.push(`          listen_port = ${ib.listen_port};`)
+    if (ib.type === 'shadowsocks') {
+      lines.push(`          method = ${nixString(ib.method)};`)
+      lines.push(`          password = ${nixString(ib.password)};`)
+    } else if (ib.type === 'vmess') {
+      lines.push(`          users = [ { uuid = ${nixString(ib.users[0].uuid)}; } ];`)
+    } else if (ib.type === 'trojan') {
+      lines.push(`          users = [ { password = ${nixString(ib.users[0].password)}; } ];`)
+      lines.push(`          tls = {`)
+      lines.push(`            enabled = true;`)
+      if (ib.tls.server_name) lines.push(`            server_name = ${nixString(ib.tls.server_name)};`)
+      if (ib.tls.acme) {
+        lines.push(`            acme = {`)
+        lines.push(`              domain = [ ${ib.tls.acme.domain.map(nixString).join(' ')} ];`)
+        lines.push(`            };`)
+      } else {
+        if (ib.tls.certificate_path) lines.push(`            certificate_path = ${nixString(ib.tls.certificate_path)};`)
+        if (ib.tls.key_path) lines.push(`            key_path = ${nixString(ib.tls.key_path)};`)
+      }
+      lines.push(`          };`)
+    }
+    lines.push('        }')
+    return lines.join('\n')
+  }).join('\n')
+
+  const nixLogLines = [
+    `        level = ${nixString(serverLog.level)};`,
+    `        timestamp = ${serverLog.timestamp ? 'true' : 'false'};`,
+  ]
+  if (serverLog.output) {
+    nixLogLines.push(`        output = ${nixString(serverLog.output)};`)
+  }
+
+  return `{ config, pkgs, ... }:
+{
+  services.sing-box = {
+    enable = true;
+    settings = {
+      log = {
+${nixLogLines.join('\n')}
+      };
+      inbounds = [
+${nixInbounds}
+      ];
+      outbounds = [
+        {
+          type = "direct";
+          tag = "direct";
+        }
+      ];
+    };
+  };
+}
+`
 }
 
 async function serverAdd(protocol, values, metaPath) {
@@ -600,65 +662,7 @@ async function serverGen(metaPath, outputDir) {
   }
 
   // build NixOS module
-  const nixInbounds = inbounds.map(ib => {
-    const lines = ['        {']
-    lines.push(`          type = "${ib.type}";`)
-    lines.push(`          tag = "${ib.tag}";`)
-    lines.push(`          listen = "::";`)
-    lines.push(`          listen_port = ${ib.listen_port};`)
-    if (ib.type === 'shadowsocks') {
-      lines.push(`          method = "${ib.method}";`)
-      lines.push(`          password = "${ib.password}";`)
-    } else if (ib.type === 'vmess') {
-      lines.push(`          users = [ { uuid = "${ib.users[0].uuid}"; } ];`)
-    } else if (ib.type === 'trojan') {
-      lines.push(`          users = [ { password = "${ib.users[0].password}"; } ];`)
-      lines.push(`          tls = {`)
-      lines.push(`            enabled = true;`)
-      if (ib.tls.server_name) lines.push(`            server_name = "${ib.tls.server_name}";`)
-      if (ib.tls.acme) {
-        lines.push(`            acme = {`)
-        lines.push(`              domain = [ ${ib.tls.acme.domain.map(d => `"${d}"`).join(' ')} ];`)
-        lines.push(`            };`)
-      } else {
-        if (ib.tls.certificate_path) lines.push(`            certificate_path = "${ib.tls.certificate_path}";`)
-        if (ib.tls.key_path) lines.push(`            key_path = "${ib.tls.key_path}";`)
-      }
-      lines.push(`          };`)
-    }
-    lines.push('        }')
-    return lines.join('\n')
-  }).join('\n')
-
-  const nixLogLines = [
-    '        level = "info";',
-    `        timestamp = ${serverLog.timestamp ? 'true' : 'false'};`,
-  ]
-  if (serverLog.output) {
-    nixLogLines.push(`        output = ${nixString(serverLog.output)};`)
-  }
-
-  const nixModule = `{ config, pkgs, ... }:
-{
-  services.sing-box = {
-    enable = true;
-    settings = {
-      log = {
-${nixLogLines.join('\n')}
-      };
-      inbounds = [
-${nixInbounds}
-      ];
-      outbounds = [
-        {
-          type = "direct";
-          tag = "direct";
-        }
-      ];
-    };
-  };
-}
-`
+  const nixModule = buildNixServerModule(inbounds, serverLog)
 
   // write files
   const dir = outputDir || '.'
@@ -678,9 +682,7 @@ ${nixInbounds}
     if (entry.tlsMode === 'acme') {
       console.log(`\n${YELLOW}[提示]${RESET} Trojan acme 模式: 请确保 ${BOLD}${entry.domain}${RESET} 已解析到本机且 80 端口可达，sing-box 启动时会自动申请证书`)
     } else if (entry.tlsMode === 'self-signed') {
-      console.log(`\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`)
-      console.log(`  sing-box generate tls-keypair tls -m 456`)
-      console.log(`  产出 /etc/sing-box/tls.cer + /etc/sing-box/tls.key`)
+      console.log(buildSelfSignedTlsGuidance(entry))
     }
   }
 
@@ -700,6 +702,15 @@ const GREEN = `${ESC}[32m`
 const YELLOW = `${ESC}[33m`
 const RED = `${ESC}[31m`
 const RESET = `${ESC}[0m`
+
+export function buildSelfSignedTlsGuidance(entry) {
+  const tls = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry).tls
+  return [
+    `\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`,
+    '  sing-box generate tls-keypair tls -m 456',
+    `  请将证书和私钥保存到 ${tls.certificate_path} + ${tls.key_path}`,
+  ].join('\n')
+}
 
 function ask(rl, question) {
   return new Promise((resolve, reject) => {
