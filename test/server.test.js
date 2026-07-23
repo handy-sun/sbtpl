@@ -478,6 +478,23 @@ test('importServerConfig treats unusual inbound types as unsupported without lea
   assert.doesNotMatch(result.warnings.join('\n'), /prototype-secret|nested-secret|another-secret/)
 })
 
+test('importServerConfig rejects control characters in unsupported inbound types without exposing values', () => {
+  assert.throws(() => importServerConfig({
+    inbounds: [
+      { type: 'http\u0085FORGED' },
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: 'safe-uuid' }],
+      },
+    ],
+  }, {}), (error) => {
+    assert.match(error.message, /inbound 0.*type.*control character/i)
+    assert.doesNotMatch(error.message, /FORGED|\u0085/)
+    return true
+  })
+})
+
 test('importServerConfig maps ACME Trojan domain from server_name or the first valid ACME domain', () => {
   const fromServerName = importServerConfig({
     inbounds: [{
@@ -889,6 +906,33 @@ test('server import rejects control characters without terminal injection or met
     assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
     assert.deepEqual(await readFile(metaPath), originalMeta)
   }
+})
+
+test('server import rejects controls in unsupported inbound types without writing metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [
+      { type: 'http\u0085FORGED' },
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: 'safe-uuid' }],
+      },
+    ],
+  }))
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+  const output = result.stdout + result.stderr
+
+  assert.notEqual(result.status, 0)
+  assert.match(output, /inbound 0.*type.*control character/i)
+  assert.doesNotMatch(output, /FORGED|\u0085/)
+  assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
 })
 
 test('server rejects combining a subcommand with --import without writing metadata', async (t) => {

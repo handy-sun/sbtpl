@@ -296,6 +296,9 @@ export function importServerConfig(config, currentMeta = {}) {
 
   config.inbounds.forEach((inbound, index) => {
     const inboundType = isPlainObject(inbound) ? inbound.type : undefined
+    if (typeof inboundType === 'string') {
+      requireImportedString(inboundType, `inbound ${index} type`, { allowEmpty: true })
+    }
     const internalType = supportedTypes.get(inboundType)
     if (!internalType) {
       let typeLabel
