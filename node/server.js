@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'fs/promises'
+import { randomUUID } from 'node:crypto'
 
 import {
   VMessBean, TrojanBean, ShadowsocksBean,
@@ -153,6 +154,15 @@ export function normalizeMeta(meta = {}) {
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function formatPathForDisplay(value) {
+  return JSON.stringify(String(value))
+}
+
+function filesystemError(action, filePath, error) {
+  const code = typeof error?.code === 'string' ? error.code : 'UNKNOWN'
+  return new Error(`${action} ${formatPathForDisplay(filePath)} (${code})`)
 }
 
 function requireNonEmptyString(value, field) {
@@ -338,24 +348,100 @@ export function importServerConfig(config, currentMeta = {}) {
   return { meta, warnings }
 }
 
-async function loadMeta(metaPath, options = {}) {
+async function loadMeta(metaPath) {
   const p = metaPath || DEFAULT_META_PATH
   try {
     const raw = await fs.readFile(p, 'utf-8')
     return normalizeMeta(JSON.parse(raw))
-  } catch (error) {
-    if (options.strict && error?.code !== 'ENOENT') {
-      throw new Error(`could not load metadata ${p}`)
-    }
+  } catch {
     return normalizeMeta()
+  }
+}
+
+async function loadMetaStrict(metaPath) {
+  const p = metaPath || DEFAULT_META_PATH
+  let raw
+  try {
+    raw = await fs.readFile(p, 'utf-8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return normalizeMeta()
+    throw filesystemError('could not read metadata', p, error)
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error(`could not load metadata ${formatPathForDisplay(p)} (invalid JSON)`)
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(`metadata root in ${formatPathForDisplay(p)} must be an object`)
+  }
+  return normalizeMeta(parsed)
+}
+
+async function statIfExists(filePath, label) {
+  try {
+    return await fs.stat(filePath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw filesystemError(`could not inspect ${label}`, filePath, error)
+  }
+}
+
+async function rejectImportMetaAlias(importPath, metaPath) {
+  const resolvedImportPath = path.resolve(importPath)
+  const resolvedMetaPath = path.resolve(metaPath)
+  if (resolvedImportPath === resolvedMetaPath) {
+    throw new Error(
+      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(metaPath)} must be different`,
+    )
+  }
+
+  const [importStat, metaStat] = await Promise.all([
+    statIfExists(resolvedImportPath, 'import path'),
+    statIfExists(resolvedMetaPath, 'metadata path'),
+  ])
+  if (importStat && metaStat && importStat.dev === metaStat.dev && importStat.ino === metaStat.ino) {
+    throw new Error(
+      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(metaPath)} alias the same file`,
+    )
   }
 }
 
 async function saveMeta(meta, metaPath) {
   const p = metaPath || DEFAULT_META_PATH
-  await fs.mkdir(path.dirname(p), { recursive: true })
-  await fs.writeFile(p, JSON.stringify(normalizeMeta(meta), null, 2), 'utf-8')
-  sbtplLog(`saved to ${p}`)
+  const dir = path.dirname(p)
+  const tempPath = path.join(dir, `.${path.basename(p)}.${process.pid}.${randomUUID()}.tmp`)
+  let handle
+  try {
+    await fs.mkdir(dir, { recursive: true })
+    let mode = 0o600
+    try {
+      mode = (await fs.stat(p)).mode & 0o777
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+
+    handle = await fs.open(tempPath, 'wx', mode)
+    await handle.chmod(mode)
+    await handle.writeFile(JSON.stringify(normalizeMeta(meta), null, 2), 'utf-8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(tempPath, p)
+  } catch (error) {
+    if (handle) {
+      try {
+        await handle.close()
+      } catch {}
+    }
+    try {
+      await fs.unlink(tempPath)
+    } catch {}
+    throw filesystemError('could not save metadata', p, error)
+  }
+  sbtplLog(`saved to ${formatPathForDisplay(p)}`)
 }
 
 // --- server 子命令 ---
@@ -694,22 +780,30 @@ async function serverGen(metaPath, outputDir) {
 }
 
 export async function serverImport(importPath, metaPath) {
-  const raw = await fs.readFile(importPath, 'utf-8')
+  const effectiveMetaPath = metaPath || DEFAULT_META_PATH
+  await rejectImportMetaAlias(importPath, effectiveMetaPath)
+
+  let raw
+  try {
+    raw = await fs.readFile(importPath, 'utf-8')
+  } catch (error) {
+    throw filesystemError('could not read import file', importPath, error)
+  }
   let config
   try {
     config = JSON.parse(raw)
   } catch {
-    throw new Error(`invalid JSON in ${importPath}`)
+    throw new Error(`invalid JSON in ${formatPathForDisplay(importPath)}`)
   }
 
-  const currentMeta = await loadMeta(metaPath, { strict: true })
+  const currentMeta = await loadMetaStrict(effectiveMetaPath)
   const { meta, warnings } = importServerConfig(config, currentMeta)
-  await saveMeta(meta, metaPath)
+  await saveMeta(meta, effectiveMetaPath)
 
   for (const warning of warnings) {
     console.warn(`[sbtpl.Warning] ${warning}`)
   }
-  sbtplLog(`imported ${meta.protocols.length} supported inbound(s); skipped ${warnings.length} unsupported inbound(s)`)
+  sbtplLog(`imported ${meta.protocols.length} supported inbound(s) from ${formatPathForDisplay(importPath)}; skipped ${warnings.length} unsupported inbound(s)`)
   if (!meta.ip) {
     sbtplLog('server IP is empty; run: sbtpl server set --ip <addr>')
   }
@@ -734,7 +828,7 @@ export function buildSelfSignedTlsGuidance(entry) {
   return [
     `\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`,
     '  sing-box generate tls-keypair tls -m 456',
-    `  请将证书和私钥保存到 ${tls.certificate_path} + ${tls.key_path}`,
+    `  请将证书和私钥保存到 ${formatPathForDisplay(tls.certificate_path)} + ${formatPathForDisplay(tls.key_path)}`,
   ].join('\n')
 }
 

@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import fs, {
+  chmod, lstat, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile,
+} from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -14,6 +16,7 @@ import {
   importServerConfig,
   normalizeMeta,
   resolveServerIpInput,
+  serverImport,
   PROTOCOL_REGISTRY,
 } from '../node/server.js'
 
@@ -578,6 +581,7 @@ test('server -i imports supported inbounds, warns for skipped ones, and preserve
     },
     extra: 'kept',
   }))
+  await chmod(metaPath, 0o640)
   await writeFile(importPath, JSON.stringify({
     log: {
       level: 'warn',
@@ -614,6 +618,7 @@ test('server -i imports supported inbounds, warns for skipped ones, and preserve
     serverLogFile: '/var/log/sing-box/server.log',
     futureSetting: 'kept',
   })
+  assert.equal((await stat(metaPath)).mode & 0o777, 0o640)
 })
 
 test('server --import accepts the long flag and hints when server IP is empty', async (t) => {
@@ -641,6 +646,7 @@ test('server --import accepts the long flag and hints when server IP is empty', 
     method: '2022-blake3-aes-256-gcm',
     password: 'shadowsocks-secret',
   }])
+  assert.equal((await stat(metaPath)).mode & 0o777, 0o600)
 })
 
 test('server import read and JSON failures preserve metadata bytes', async (t) => {
@@ -764,6 +770,174 @@ test('server rejects a subcommand placed after --import without writing metadata
   assert.match(result.stdout + result.stderr, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
   assert.doesNotMatch(result.stdout + result.stderr, /\n\s+at\s|node:internal|file:\/\//i)
   assert.deepEqual(await readFile(metaPath), originalMeta)
+})
+
+test('server import rejects identical source and metadata paths without changing the source', async (t) => {
+  const dir = await withTempDir(t)
+  const configPath = path.join(dir, 'same.json')
+  const original = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+  await writeFile(configPath, original)
+
+  const result = runServer('--import', configPath, '--meta', configPath)
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /import path.*metadata path.*different/i)
+  assert.deepEqual(await readFile(configPath), original)
+})
+
+test('server import rejects symlink aliases without changing the source', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta-link.json')
+  const original = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+  await writeFile(importPath, original)
+  await symlink(importPath, metaPath)
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /same file|alias/i)
+  assert.deepEqual(await readFile(importPath), original)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+})
+
+test('server import rejects non-object metadata roots without rewriting them', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+
+  for (const rawMeta of ['[]', 'null', '42', '"primitive"']) {
+    const original = Buffer.from(rawMeta)
+    await writeFile(metaPath, original)
+
+    const result = runServer('--import', importPath, '--meta', metaPath)
+
+    assert.notEqual(result.status, 0)
+    assert.match(result.stdout + result.stderr, /metadata root.*object/i)
+    assert.deepEqual(await readFile(metaPath), original)
+  }
+})
+
+test('server import quotes control characters in path success and error diagnostics', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source\n\u001b[31mFORGED.json')
+  const metaPath = path.join(dir, 'meta\n\u001b[32mFORGED.json')
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+
+  const success = runServer('--import', importPath, '--meta', metaPath)
+  const successOutput = success.stdout + success.stderr
+
+  assert.equal(success.status, 0, successOutput)
+  assert.ok(successOutput.includes(JSON.stringify(importPath)))
+  assert.ok(successOutput.includes(JSON.stringify(metaPath)))
+  assert.equal(successOutput.includes(importPath), false)
+  assert.equal(successOutput.includes(metaPath), false)
+  assert.doesNotMatch(successOutput, /\u001b/)
+
+  const missingPath = path.join(dir, 'missing\n\u001b[33mFORGED.json')
+  const failure = runServer('--import', missingPath, '--meta', metaPath)
+  const failureOutput = failure.stdout + failure.stderr
+
+  assert.notEqual(failure.status, 0)
+  assert.ok(failureOutput.includes(JSON.stringify(missingPath)))
+  assert.match(failureOutput, /ENOENT/)
+  assert.equal(failureOutput.includes(missingPath), false)
+  assert.doesNotMatch(failureOutput, /\u001b/)
+
+  await writeFile(metaPath, '{')
+  const metaFailure = runServer('--import', importPath, '--meta', metaPath)
+  const metaFailureOutput = metaFailure.stdout + metaFailure.stderr
+
+  assert.notEqual(metaFailure.status, 0)
+  assert.ok(metaFailureOutput.includes(JSON.stringify(metaPath)))
+  assert.equal(metaFailureOutput.includes(metaPath), false)
+  assert.doesNotMatch(metaFailureOutput, /\u001b/)
+})
+
+test('self-signed TLS guidance quotes control characters in certificate paths', () => {
+  const certificatePath = '/srv/tls/cert\n\u001b[31mFORGED.crt'
+  const keyPath = '/srv/tls/key\n\u001b[32mFORGED.key'
+
+  const guidance = buildSelfSignedTlsGuidance({
+    port: 443,
+    password: 'test',
+    tlsMode: 'self-signed',
+    certificatePath,
+    keyPath,
+  })
+
+  assert.ok(guidance.includes(JSON.stringify(certificatePath)))
+  assert.ok(guidance.includes(JSON.stringify(keyPath)))
+  assert.equal(guidance.includes(certificatePath), false)
+  assert.equal(guidance.includes(keyPath), false)
+  assert.doesNotMatch(guidance, /\u001b\[(31|32)mFORGED/)
+})
+
+test('serverImport keeps existing metadata and cleans its temp file when a write fails', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+
+  const originalOpen = fs.open.bind(fs)
+  let openedPath
+  let openedFlags
+  t.mock.method(fs, 'open', async (...args) => {
+    openedPath = args[0]
+    openedFlags = args[1]
+    const handle = await originalOpen(...args)
+    const originalWriteFile = handle.writeFile.bind(handle)
+    handle.writeFile = async (data, ...writeArgs) => {
+      await originalWriteFile(String(data).slice(0, 16), ...writeArgs)
+      const error = new Error('deterministic partial write failure')
+      error.code = 'EFBIG'
+      throw error
+    }
+    return handle
+  })
+
+  await assert.rejects(
+    serverImport(importPath, metaPath),
+    /could not save metadata.*EFBIG/i,
+  )
+  assert.equal(path.dirname(openedPath), dir)
+  assert.equal(openedFlags, 'wx')
+  assert.notEqual(openedPath, metaPath)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+  assert.deepEqual((await readdir(dir)).sort(), ['meta.json', 'source.json'])
 })
 
 test('Trojan buildServerInbound with acme mode uses acme field', () => {
