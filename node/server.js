@@ -188,16 +188,24 @@ function importTrojanTls(tls, index) {
     throw new Error(`inbound ${index} has mixed ACME and certificate TLS modes`)
   }
 
-  const serverName = typeof tls.server_name === 'string' && tls.server_name.trim() !== ''
-    ? tls.server_name
+  const serverName = Object.hasOwn(tls, 'server_name')
+    ? requireNonEmptyString(tls.server_name, `inbound ${index} tls.server_name`)
     : ''
 
   if (hasAcme) {
     if (!isPlainObject(tls.acme)) {
       throw new Error(`inbound ${index} tls.acme must be an object`)
     }
-    const acmeDomain = Array.isArray(tls.acme.domain) ? tls.acme.domain[0] : undefined
-    const domain = serverName || requireNonEmptyString(acmeDomain, `inbound ${index} tls.acme.domain[0]`)
+    if (!Array.isArray(tls.acme.domain)) {
+      throw new Error(`inbound ${index} tls.acme.domain must be an array`)
+    }
+    const acmeDomain = tls.acme.domain.find(domain => (
+      typeof domain === 'string' && domain.trim() !== ''
+    ))
+    if (acmeDomain === undefined) {
+      throw new Error(`inbound ${index} tls.acme.domain must contain a non-empty string`)
+    }
+    const domain = serverName || acmeDomain
     return { tlsMode: 'acme', domain }
   }
 

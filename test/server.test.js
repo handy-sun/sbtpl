@@ -256,7 +256,7 @@ test('importServerConfig treats unusual inbound types as unsupported without lea
   assert.doesNotMatch(result.warnings.join('\n'), /prototype-secret|nested-secret|another-secret/)
 })
 
-test('importServerConfig maps ACME Trojan domain from server_name or the first ACME domain', () => {
+test('importServerConfig maps ACME Trojan domain from server_name or the first valid ACME domain', () => {
   const fromServerName = importServerConfig({
     inbounds: [{
       type: 'trojan',
@@ -276,7 +276,7 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first A
       users: [{ password: 'trojan-secret' }],
       tls: {
         enabled: true,
-        acme: { domain: ['first.example', 'second.example'] },
+        acme: { domain: ['', 'first.example', 'second.example'] },
       },
     }],
   }, {})
@@ -295,6 +295,56 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first A
     tlsMode: 'acme',
     domain: 'first.example',
   })
+})
+
+test('importServerConfig validates Trojan server_name whenever it is present', () => {
+  const tlsCases = [
+    {
+      enabled: true,
+      server_name: 123,
+      acme: { domain: ['acme.example'] },
+    },
+    {
+      enabled: true,
+      server_name: '   ',
+      certificate_path: '/srv/tls/server.crt',
+      key_path: '/srv/tls/server.key',
+    },
+  ]
+
+  for (const tls of tlsCases) {
+    assert.throws(() => importServerConfig({
+      inbounds: [{
+        type: 'trojan',
+        listen_port: 443,
+        users: [{ password: 'trojan-secret' }],
+        tls,
+      }],
+    }, {}), /inbound 0.*tls\.server_name.*non-empty string/i)
+  }
+})
+
+test('importServerConfig validates ACME domain arrays even with a valid server_name', () => {
+  const invalidDomains = [
+    'acme.example',
+    [],
+    [null, '   '],
+  ]
+
+  for (const domain of invalidDomains) {
+    assert.throws(() => importServerConfig({
+      inbounds: [{
+        type: 'trojan',
+        listen_port: 443,
+        users: [{ password: 'trojan-secret' }],
+        tls: {
+          enabled: true,
+          server_name: 'server-name.example',
+          acme: { domain },
+        },
+      }],
+    }, {}), /inbound 0.*tls\.acme\.domain/i)
+  }
 })
 
 test('importServerConfig requires Trojan tls.enabled to be boolean true', () => {
