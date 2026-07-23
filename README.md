@@ -111,6 +111,10 @@ sbtpl server list
 
 # 生成配置文件
 sbtpl server gen -o ./output
+
+# 导入 sing-box 服务端配置
+sbtpl server -i ./server-config.json
+sbtpl server --import ./server-config.json --meta ~/.config/sbtpl/meta.json
 ```
 
 #### 服务端子命令
@@ -123,6 +127,9 @@ sbtpl server gen -o ./output
 | `list` | 查看所有配置及 share links |
 | `set --ip <addr>` | 设置服务器 IP |
 | `gen [-o <dir>]` | 生成服务端/客户端配置文件及 NixOS 模块 |
+| `--import <file>` / `-i <file>` | 从 sing-box 配置导入 VMess/Trojan/Shadowsocks 入站，替换托管的协议和日志设置并保留已有 sbtpl IP；跳过不支持的入站并输出警告。若没有 IP，需执行 `server set --ip <addr>` |
+
+导入失败时不会写入元数据，现有元数据保持不变。
 
 ## 策略过滤格式
 
