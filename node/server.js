@@ -143,6 +143,185 @@ export function normalizeMeta(meta = {}) {
   }
 }
 
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requireNonEmptyString(value, field) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`${field} must be a non-empty string`)
+  }
+  return value
+}
+
+function importInboundPort(inbound, index) {
+  const port = inbound.listen_port
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`inbound ${index} listen_port must be an integer from 1 through 65535`)
+  }
+  return port
+}
+
+function importSingleUserCredential(inbound, index, credential) {
+  if (!Array.isArray(inbound.users) || inbound.users.length !== 1) {
+    throw new Error(`inbound ${index} users must contain exactly one entry`)
+  }
+  const user = inbound.users[0]
+  if (!isPlainObject(user)) {
+    throw new Error(`inbound ${index} users[0] must be an object`)
+  }
+  return requireNonEmptyString(user[credential], `inbound ${index} users[0].${credential}`)
+}
+
+function importTrojanTls(tls, index) {
+  if (!isPlainObject(tls)) {
+    throw new Error(`inbound ${index} tls must be an object`)
+  }
+  if (tls.enabled === false) {
+    throw new Error(`inbound ${index} tls.enabled must not be false`)
+  }
+
+  const hasAcme = Object.hasOwn(tls, 'acme')
+  const hasCertificate = Object.hasOwn(tls, 'certificate_path')
+  const hasKey = Object.hasOwn(tls, 'key_path')
+  if (hasAcme && (hasCertificate || hasKey)) {
+    throw new Error(`inbound ${index} has mixed ACME and certificate TLS modes`)
+  }
+
+  const serverName = typeof tls.server_name === 'string' && tls.server_name.trim() !== ''
+    ? tls.server_name
+    : ''
+
+  if (hasAcme) {
+    if (!isPlainObject(tls.acme)) {
+      throw new Error(`inbound ${index} tls.acme must be an object`)
+    }
+    const acmeDomain = Array.isArray(tls.acme.domain) ? tls.acme.domain[0] : undefined
+    const domain = serverName || requireNonEmptyString(acmeDomain, `inbound ${index} tls.acme.domain[0]`)
+    return { tlsMode: 'acme', domain }
+  }
+
+  if (!hasCertificate && !hasKey) {
+    throw new Error(`inbound ${index} tls must use ACME or certificate_path with key_path`)
+  }
+  const certificatePath = requireNonEmptyString(tls.certificate_path, `inbound ${index} tls.certificate_path`)
+  const keyPath = requireNonEmptyString(tls.key_path, `inbound ${index} tls.key_path`)
+  return {
+    tlsMode: 'self-signed',
+    domain: serverName,
+    certificatePath,
+    keyPath,
+  }
+}
+
+function importServerLog(log) {
+  if (log === undefined) {
+    return { level: 'info', timestamp: false, output: '' }
+  }
+  if (!isPlainObject(log)) {
+    throw new Error('log must be an object')
+  }
+
+  const imported = { level: 'info', timestamp: false, output: '' }
+  if (Object.hasOwn(log, 'level')) {
+    imported.level = requireNonEmptyString(log.level, 'log.level')
+  }
+  if (Object.hasOwn(log, 'timestamp')) {
+    if (typeof log.timestamp !== 'boolean') {
+      throw new Error('log.timestamp must be a boolean')
+    }
+    imported.timestamp = log.timestamp
+  }
+  if (Object.hasOwn(log, 'output')) {
+    if (typeof log.output !== 'string') {
+      throw new Error('log.output must be a string')
+    }
+    imported.output = log.output
+  }
+  return imported
+}
+
+export function importServerConfig(config, currentMeta = {}) {
+  if (!isPlainObject(config)) {
+    throw new Error('config root must be an object')
+  }
+  if (!Array.isArray(config.inbounds)) {
+    throw new Error('config inbounds must be an array')
+  }
+
+  const importedLog = importServerLog(config.log)
+  const protocols = []
+  const warnings = []
+  const importedTypes = new Set()
+  const supportedTypes = new Map([
+    ['vmess', 'vmess'],
+    ['trojan', 'trojan'],
+    ['shadowsocks', 'ss'],
+  ])
+
+  config.inbounds.forEach((inbound, index) => {
+    const inboundType = isPlainObject(inbound) ? inbound.type : undefined
+    const internalType = supportedTypes.get(inboundType)
+    if (!internalType) {
+      let typeLabel
+      if (typeof inboundType === 'string') typeLabel = JSON.stringify(inboundType)
+      else if (inboundType === undefined) typeLabel = '<missing>'
+      else if (inboundType === null) typeLabel = 'null'
+      else typeLabel = `<${Array.isArray(inboundType) ? 'array' : typeof inboundType}>`
+      warnings.push(`inbound ${index}: unsupported type ${typeLabel}`)
+      return
+    }
+    if (importedTypes.has(internalType)) {
+      throw new Error(`inbound ${index} duplicates supported protocol type ${inboundType}`)
+    }
+    importedTypes.add(internalType)
+
+    const port = importInboundPort(inbound, index)
+    if (inboundType === 'vmess') {
+      protocols.push({
+        type: 'vmess',
+        port,
+        uuid: importSingleUserCredential(inbound, index, 'uuid'),
+      })
+      return
+    }
+    if (inboundType === 'trojan') {
+      protocols.push({
+        type: 'trojan',
+        port,
+        password: importSingleUserCredential(inbound, index, 'password'),
+        ...importTrojanTls(inbound.tls, index),
+      })
+      return
+    }
+    protocols.push({
+      type: 'ss',
+      port,
+      method: requireNonEmptyString(inbound.method, `inbound ${index} method`),
+      password: requireNonEmptyString(inbound.password, `inbound ${index} password`),
+    })
+  })
+
+  if (protocols.length === 0) {
+    throw new Error('config contains no supported inbounds')
+  }
+
+  const baseMeta = isPlainObject(currentMeta) ? currentMeta : {}
+  const currentSettings = isPlainObject(baseMeta.settings) ? baseMeta.settings : {}
+  const meta = normalizeMeta({
+    ...baseMeta,
+    protocols,
+    settings: {
+      ...currentSettings,
+      serverLogLevel: importedLog.level,
+      serverLogTimestamp: importedLog.timestamp,
+      serverLogFile: importedLog.output,
+    },
+  })
+
+  return { meta, warnings }
+}
+
 async function loadMeta(metaPath) {
   const p = metaPath || DEFAULT_META_PATH
   try {

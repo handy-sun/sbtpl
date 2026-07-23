@@ -5,6 +5,7 @@ import {
   buildServerInboundTag,
   buildServerLog,
   getLocalIpFromInterfaces,
+  importServerConfig,
   normalizeMeta,
   resolveServerIpInput,
   PROTOCOL_REGISTRY,
@@ -87,6 +88,289 @@ test('buildServerLog maps software settings to server log config', () => {
     level: 'info',
     timestamp: true,
     output: '/var/log/sing-box/server.log',
+  })
+})
+
+test('importServerConfig replaces supported protocols and log settings while preserving unrelated metadata', () => {
+  const config = {
+    log: {
+      level: 'warn',
+      timestamp: true,
+      output: '/var/log/sing-box/server.log',
+    },
+    inbounds: [
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+      },
+      {
+        type: 'trojan',
+        listen_port: 443,
+        users: [{ password: 'trojan-secret' }],
+        tls: {
+          enabled: true,
+          server_name: 'example.com',
+          certificate_path: '/srv/tls/server.crt',
+          key_path: '/srv/tls/server.key',
+        },
+      },
+      {
+        type: 'shadowsocks',
+        listen_port: 20085,
+        method: '2022-blake3-aes-256-gcm',
+        password: 'shadowsocks-secret',
+      },
+      {
+        type: 'http',
+        listen_port: 8080,
+      },
+    ],
+  }
+  const currentMeta = {
+    ip: '203.0.113.10',
+    protocols: [{ type: 'vmess', port: 1, uuid: 'old-uuid' }],
+    settings: {
+      serverLogLevel: 'error',
+      serverLogTimestamp: false,
+      serverLogFile: '/tmp/old.log',
+      futureSetting: 'kept',
+    },
+    extra: 'kept',
+  }
+
+  const result = importServerConfig(config, currentMeta)
+
+  assert.deepEqual(result.meta.protocols, [
+    {
+      type: 'vmess',
+      port: 20086,
+      uuid: '11111111-2222-3333-4444-555555555555',
+    },
+    {
+      type: 'trojan',
+      port: 443,
+      password: 'trojan-secret',
+      tlsMode: 'self-signed',
+      domain: 'example.com',
+      certificatePath: '/srv/tls/server.crt',
+      keyPath: '/srv/tls/server.key',
+    },
+    {
+      type: 'ss',
+      port: 20085,
+      method: '2022-blake3-aes-256-gcm',
+      password: 'shadowsocks-secret',
+    },
+  ])
+  assert.equal(result.meta.ip, '203.0.113.10')
+  assert.equal(result.meta.extra, 'kept')
+  assert.deepEqual(result.meta.settings, {
+    serverLogLevel: 'warn',
+    serverLogTimestamp: true,
+    serverLogFile: '/var/log/sing-box/server.log',
+    futureSetting: 'kept',
+  })
+  assert.equal(result.warnings.length, 1)
+  assert.match(result.warnings[0], /inbound 3/i)
+  assert.match(result.warnings[0], /http/i)
+})
+
+test('importServerConfig rejects duplicate supported protocol types', () => {
+  const config = {
+    inbounds: [
+      { type: 'shadowsocks', listen_port: 10001, method: 'aes-256-gcm', password: 'first-secret' },
+      { type: 'shadowsocks', listen_port: 10002, method: 'aes-128-gcm', password: 'second-secret' },
+    ],
+  }
+
+  assert.throws(
+    () => importServerConfig(config, {}),
+    /inbound 1.*duplicate.*shadowsocks/i,
+  )
+})
+
+test('importServerConfig rejects malformed or missing credentials without exposing values', () => {
+  const cases = [
+    {
+      config: {
+        inbounds: [{
+          type: 'vmess',
+          listen_port: 20086,
+          users: [{ uuid: '' }],
+        }],
+      },
+      field: /uuid/i,
+      secret: '',
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan',
+          listen_port: 443,
+          users: [{ password: { value: 'credential-must-not-leak' } }],
+          tls: {
+            certificate_path: '/srv/tls/server.crt',
+            key_path: '/srv/tls/server.key',
+          },
+        }],
+      },
+      field: /password/i,
+      secret: 'credential-must-not-leak',
+    },
+  ]
+
+  for (const { config, field, secret } of cases) {
+    assert.throws(() => importServerConfig(config, {}), (error) => {
+      assert.match(error.message, /inbound 0/i)
+      assert.match(error.message, field)
+      if (secret) assert.doesNotMatch(error.message, new RegExp(secret))
+      return true
+    })
+  }
+})
+
+test('importServerConfig rejects configs without supported inbounds', () => {
+  assert.throws(
+    () => importServerConfig({ inbounds: [{ type: 'http', password: 'not-a-warning' }] }, {}),
+    /no supported inbounds/i,
+  )
+})
+
+test('importServerConfig treats unusual inbound types as unsupported without leaking nested values', () => {
+  const result = importServerConfig({
+    inbounds: [
+      { type: '__proto__', password: 'prototype-secret' },
+      { type: { value: 'nested-secret' }, password: 'another-secret' },
+      {
+        type: 'vmess',
+        listen_port: 20086,
+        users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+      },
+    ],
+  }, {})
+
+  assert.equal(result.warnings.length, 2)
+  assert.match(result.warnings[0], /inbound 0.*__proto__/i)
+  assert.match(result.warnings[1], /inbound 1.*object/i)
+  assert.doesNotMatch(result.warnings.join('\n'), /prototype-secret|nested-secret|another-secret/)
+})
+
+test('importServerConfig maps ACME Trojan domain from server_name or the first ACME domain', () => {
+  const fromServerName = importServerConfig({
+    inbounds: [{
+      type: 'trojan',
+      listen_port: 443,
+      users: [{ password: 'trojan-secret' }],
+      tls: {
+        server_name: 'server-name.example',
+        acme: { domain: ['acme.example'] },
+      },
+    }],
+  }, {})
+  const fromAcmeDomain = importServerConfig({
+    inbounds: [{
+      type: 'trojan',
+      listen_port: 8443,
+      users: [{ password: 'trojan-secret' }],
+      tls: {
+        enabled: true,
+        acme: { domain: ['first.example', 'second.example'] },
+      },
+    }],
+  }, {})
+
+  assert.deepEqual(fromServerName.meta.protocols[0], {
+    type: 'trojan',
+    port: 443,
+    password: 'trojan-secret',
+    tlsMode: 'acme',
+    domain: 'server-name.example',
+  })
+  assert.deepEqual(fromAcmeDomain.meta.protocols[0], {
+    type: 'trojan',
+    port: 8443,
+    password: 'trojan-secret',
+    tlsMode: 'acme',
+    domain: 'first.example',
+  })
+})
+
+test('importServerConfig validates root, inbound, TLS, and log shapes', () => {
+  const validVmess = {
+    type: 'vmess',
+    listen_port: 20086,
+    users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+  }
+  const invalidCases = [
+    { config: null, message: /root.*object/i },
+    { config: [], message: /root.*object/i },
+    { config: {}, message: /inbounds.*array/i },
+    { config: { inbounds: [{ ...validVmess, listen_port: 0 }] }, message: /inbound 0.*listen_port/i },
+    { config: { inbounds: [{ ...validVmess, users: [] }] }, message: /inbound 0.*users/i },
+    {
+      config: {
+        inbounds: [{
+          type: 'shadowsocks', listen_port: 20085, method: '', password: 'secret',
+        }],
+      },
+      message: /inbound 0.*method/i,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan', listen_port: 443, users: [{ password: 'secret' }],
+          tls: { enabled: false, acme: { domain: ['example.com'] } },
+        }],
+      },
+      message: /inbound 0.*tls.*enabled/i,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan', listen_port: 443, users: [{ password: 'secret' }],
+          tls: {
+            acme: { domain: ['example.com'] },
+            certificate_path: '/srv/tls/server.crt',
+            key_path: '/srv/tls/server.key',
+          },
+        }],
+      },
+      message: /inbound 0.*mixed.*tls/i,
+    },
+    { config: { log: null, inbounds: [validVmess] }, message: /log.*object/i },
+    { config: { log: { level: '' }, inbounds: [validVmess] }, message: /log\.level/i },
+    { config: { log: { timestamp: 'true' }, inbounds: [validVmess] }, message: /log\.timestamp/i },
+    { config: { log: { output: false }, inbounds: [validVmess] }, message: /log\.output/i },
+  ]
+
+  for (const { config, message } of invalidCases) {
+    assert.throws(() => importServerConfig(config, {}), message)
+  }
+})
+
+test('importServerConfig defaults absent log settings instead of retaining old values', () => {
+  const result = importServerConfig({
+    inbounds: [{
+      type: 'shadowsocks',
+      listen_port: 20085,
+      method: 'aes-256-gcm',
+      password: 'secret',
+    }],
+  }, {
+    settings: {
+      serverLogLevel: 'error',
+      serverLogTimestamp: true,
+      serverLogFile: '/tmp/old.log',
+      futureSetting: 'kept',
+    },
+  })
+
+  assert.deepEqual(result.meta.settings, {
+    serverLogLevel: 'info',
+    serverLogTimestamp: false,
+    serverLogFile: '',
+    futureSetting: 'kept',
   })
 })
 
