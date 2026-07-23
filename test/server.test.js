@@ -744,6 +744,28 @@ test('server rejects combining a subcommand with --import without writing metada
   assert.deepEqual(await readFile(metaPath), originalMeta)
 })
 
+test('server rejects a subcommand placed after --import without writing metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+
+  const result = runServer('--import', importPath, 'list', '--meta', metaPath)
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /cannot.*--import.*subcommand|--import.*cannot.*subcommand/i)
+  assert.doesNotMatch(result.stdout + result.stderr, /\n\s+at\s|node:internal|file:\/\//i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+})
+
 test('Trojan buildServerInbound with acme mode uses acme field', () => {
   const entry = { port: 443, password: 'test', tlsMode: 'acme', domain: 'example.com' }
   const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry)

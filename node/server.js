@@ -1049,8 +1049,8 @@ export async function serverDispatch(argv) {
   const metaPath = getMetaPath(args.values)
 
   if (args.values.import !== undefined) {
-    if (args.command) {
-      throw new Error('--import cannot be combined with a server subcommand')
+    if (args.command || args.protocol || args.positional.length > 0) {
+      throw new Error('--import cannot be combined with a server subcommand or positional argument')
     }
     await serverImport(args.values.import, metaPath)
     return
