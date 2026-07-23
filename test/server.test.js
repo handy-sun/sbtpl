@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs, {
-  chmod, lstat, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile,
+  chmod, lstat, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -1018,6 +1018,68 @@ test('server import rejects symlink aliases without changing the source', async 
   assert.match(result.stdout + result.stderr, /same file|alias/i)
   assert.deepEqual(await readFile(importPath), original)
   assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+})
+
+test('server import updates an existing metadata symlink target without replacing the link', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const targetPath = path.join(dir, 'meta-target.json')
+  const metaPath = path.join(dir, 'meta-link.json')
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+  await writeFile(targetPath, JSON.stringify({
+    ip: '203.0.113.10',
+    protocols: [{ type: 'vmess', port: 1, uuid: 'old-uuid' }],
+  }))
+  await chmod(targetPath, 0o640)
+  await symlink(targetPath, metaPath)
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+  assert.equal(await readlink(metaPath), targetPath)
+  const saved = JSON.parse(await readFile(targetPath, 'utf8'))
+  assert.equal(saved.ip, '203.0.113.10')
+  assert.deepEqual(saved.protocols, [{
+    type: 'vmess',
+    port: 20086,
+    uuid: '11111111-2222-3333-4444-555555555555',
+  }])
+  assert.equal((await stat(targetPath)).mode & 0o777, 0o640)
+  assert.deepEqual((await readdir(dir)).sort(), [
+    'meta-link.json',
+    'meta-target.json',
+    'source.json',
+  ])
+})
+
+test('server import leaves a dangling metadata symlink unchanged without temp files', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const missingTarget = path.join(dir, 'missing-meta.json')
+  const metaPath = path.join(dir, 'meta-link.json')
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: '11111111-2222-3333-4444-555555555555' }],
+    }],
+  }))
+  await symlink(missingTarget, metaPath)
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stdout + result.stderr, /metadata symlink.*ENOENT/i)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+  assert.equal(await readlink(metaPath), missingTarget)
+  assert.deepEqual((await readdir(dir)).sort(), ['meta-link.json', 'source.json'])
 })
 
 test('server import rejects non-object metadata roots without rewriting them', async (t) => {

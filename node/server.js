@@ -421,8 +421,26 @@ async function rejectImportMetaAlias(importPath, metaPath) {
   }
 }
 
+async function resolveMetadataWritePath(requestedPath) {
+  let pathStat
+  try {
+    pathStat = await fs.lstat(requestedPath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return requestedPath
+    throw filesystemError('could not inspect metadata path', requestedPath, error)
+  }
+  if (!pathStat.isSymbolicLink()) return requestedPath
+
+  try {
+    return await fs.realpath(requestedPath)
+  } catch (error) {
+    throw filesystemError('could not resolve metadata symlink', requestedPath, error)
+  }
+}
+
 async function saveMeta(meta, metaPath) {
-  const p = metaPath || DEFAULT_META_PATH
+  const requestedPath = metaPath || DEFAULT_META_PATH
+  const p = await resolveMetadataWritePath(requestedPath)
   const dir = path.dirname(p)
   const tempPath = path.join(dir, `.${path.basename(p)}.${process.pid}.${randomUUID()}.tmp`)
   let handle
@@ -451,9 +469,9 @@ async function saveMeta(meta, metaPath) {
     try {
       await fs.unlink(tempPath)
     } catch {}
-    throw filesystemError('could not save metadata', p, error)
+    throw filesystemError('could not save metadata', requestedPath, error)
   }
-  sbtplLog(`saved to ${formatPathForDisplay(p)}`)
+  sbtplLog(`saved to ${formatPathForDisplay(requestedPath)}`)
 }
 
 // --- server 子命令 ---
