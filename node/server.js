@@ -15,6 +15,7 @@ import {
 
 const DEFAULT_META_PATH = path.join(os.homedir(), '.config/sbtpl/meta.json')
 const DEFAULT_SERVER_SETTINGS = {
+  serverLogLevel: 'info',
   serverLogTimestamp: false,
   serverLogFile: '',
 }
@@ -64,8 +65,12 @@ export const PROTOCOL_REGISTRY = {
     buildServerInbound(entry) {
       const tls = { enabled: true, server_name: entry.domain || '' }
       if (entry.tlsMode === 'self-signed') {
-        tls.certificate_path = '/etc/sing-box/tls.cer'
-        tls.key_path = '/etc/sing-box/tls.key'
+        tls.certificate_path = typeof entry.certificatePath === 'string' && entry.certificatePath.trim() !== ''
+          ? entry.certificatePath
+          : '/etc/sing-box/tls.cer'
+        tls.key_path = typeof entry.keyPath === 'string' && entry.keyPath.trim() !== ''
+          ? entry.keyPath
+          : '/etc/sing-box/tls.key'
       } else {
         tls.acme = { domain: [entry.domain] }
       }
@@ -137,6 +142,9 @@ export function normalizeMeta(meta = {}) {
     protocols: Array.isArray(meta.protocols) ? meta.protocols : [],
     settings: {
       ...settings,
+      serverLogLevel: typeof settings.serverLogLevel === 'string' && settings.serverLogLevel.trim() !== ''
+        ? settings.serverLogLevel.trim()
+        : DEFAULT_SERVER_SETTINGS.serverLogLevel,
       serverLogTimestamp: settings.serverLogTimestamp === true ? true : DEFAULT_SERVER_SETTINGS.serverLogTimestamp,
       serverLogFile: typeof settings.serverLogFile === 'string' ? settings.serverLogFile : DEFAULT_SERVER_SETTINGS.serverLogFile,
     },
@@ -442,9 +450,12 @@ function printShareLinks(meta) {
 }
 
 export function buildServerLog(settings = {}) {
+  const logLevel = typeof settings.serverLogLevel === 'string' && settings.serverLogLevel.trim() !== ''
+    ? settings.serverLogLevel.trim()
+    : DEFAULT_SERVER_SETTINGS.serverLogLevel
   const logFile = typeof settings.serverLogFile === 'string' ? settings.serverLogFile.trim() : ''
   const log = {
-    level: 'info',
+    level: logLevel,
     timestamp: settings.serverLogTimestamp === true,
   }
   if (logFile) log.output = logFile

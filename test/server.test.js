@@ -67,9 +67,18 @@ test('normalizeMeta applies default server settings for older metadata', () => {
   assert.equal(meta.extra, 'kept')
   assert.deepEqual(meta.settings, {
     futureSetting: 'kept',
+    serverLogLevel: 'info',
     serverLogTimestamp: false,
     serverLogFile: '',
   })
+})
+
+test('normalizeMeta preserves non-empty server log levels and defaults invalid values', () => {
+  assert.equal(normalizeMeta({ settings: { serverLogLevel: ' warn ' } }).settings.serverLogLevel, 'warn')
+
+  for (const serverLogLevel of ['', '   ', null, 123]) {
+    assert.equal(normalizeMeta({ settings: { serverLogLevel } }).settings.serverLogLevel, 'info')
+  }
 })
 
 test('buildServerLog maps software settings to server log config', () => {
@@ -82,10 +91,11 @@ test('buildServerLog maps software settings to server log config', () => {
   })
 
   assert.deepEqual(buildServerLog({
+    serverLogLevel: 'warn',
     serverLogTimestamp: true,
     serverLogFile: ' /var/log/sing-box/server.log ',
   }), {
-    level: 'info',
+    level: 'warn',
     timestamp: true,
     output: '/var/log/sing-box/server.log',
   })
@@ -466,6 +476,25 @@ test('Trojan buildServerInbound with self-signed mode uses certificate paths', (
     server_name: 'example.com',
     certificate_path: '/etc/sing-box/tls.cer',
     key_path: '/etc/sing-box/tls.key',
+  })
+})
+
+test('Trojan buildServerInbound preserves custom self-signed certificate paths', () => {
+  const entry = {
+    port: 443,
+    password: 'test',
+    tlsMode: 'self-signed',
+    domain: 'example.com',
+    certificatePath: '/srv/tls/server.crt',
+    keyPath: '/srv/tls/server.key',
+  }
+  const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry)
+
+  assert.deepEqual(inbound.tls, {
+    enabled: true,
+    server_name: 'example.com',
+    certificate_path: '/srv/tls/server.crt',
+    key_path: '/srv/tls/server.key',
   })
 })
 
