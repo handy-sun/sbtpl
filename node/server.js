@@ -165,6 +165,22 @@ function filesystemError(action, filePath, error) {
   return new Error(`${action} ${formatPathForDisplay(filePath)} (${code})`)
 }
 
+function metadataTargetChangedError(filePath) {
+  const error = new Error(`metadata target ${formatPathForDisplay(filePath)} changed during import`)
+  error.code = 'METADATA_TARGET_CHANGED'
+  return error
+}
+
+function metadataHardlinkError(filePath) {
+  const error = new Error(`metadata path ${formatPathForDisplay(filePath)} has multiple hardlinks`)
+  error.code = 'METADATA_MULTIPLE_LINKS'
+  return error
+}
+
+function rejectMetadataHardlinks(fileStat, filePath) {
+  if (fileStat?.nlink > 1) throw metadataHardlinkError(filePath)
+}
+
 function requireImportedString(value, field, options = {}) {
   const { allowEmpty = false } = options
   if (typeof value !== 'string') throw new Error(`${field} must be ${allowEmpty ? 'a string' : 'a non-empty string'}`)
@@ -224,17 +240,13 @@ function importTrojanTls(tls, index) {
     if (!Array.isArray(tls.acme.domain)) {
       throw new Error(`inbound ${index} tls.acme.domain must be an array`)
     }
-    tls.acme.domain.forEach((domain, domainIndex) => {
-      if (typeof domain === 'string') {
-        requireImportedString(domain, `inbound ${index} tls.acme.domain[${domainIndex}]`, { allowEmpty: true })
-      }
-    })
-    const acmeDomain = tls.acme.domain.find(domain => (
-      typeof domain === 'string' && domain.trim() !== ''
-    ))
-    if (acmeDomain === undefined) {
+    if (tls.acme.domain.length === 0) {
       throw new Error(`inbound ${index} tls.acme.domain must contain a non-empty string`)
     }
+    tls.acme.domain.forEach((domain, domainIndex) => {
+      requireNonEmptyString(domain, `inbound ${index} tls.acme.domain[${domainIndex}]`)
+    })
+    const acmeDomain = tls.acme.domain[0]
     const domain = serverName || acmeDomain
     return { tlsMode: 'acme', domain }
   }
@@ -295,7 +307,10 @@ export function importServerConfig(config, currentMeta = {}) {
   ])
 
   config.inbounds.forEach((inbound, index) => {
-    const inboundType = isPlainObject(inbound) ? inbound.type : undefined
+    if (!isPlainObject(inbound)) {
+      throw new Error(`inbound ${index} must be an object`)
+    }
+    const inboundType = inbound.type
     if (typeof inboundType === 'string') {
       requireImportedString(inboundType, `inbound ${index} type`, { allowEmpty: true })
     }
@@ -370,26 +385,37 @@ async function loadMeta(metaPath) {
   }
 }
 
-async function loadMetaStrict(metaPath) {
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino
+}
+
+async function loadMetaStrict(metaPath, requestedPath = metaPath) {
   const p = metaPath || DEFAULT_META_PATH
+  const displayPath = requestedPath || DEFAULT_META_PATH
   let raw
+  let handle
+  let fileStat
   try {
-    raw = await fs.readFile(p, 'utf-8')
+    handle = await fs.open(p, 'r')
+    fileStat = await handle.stat()
+    raw = await handle.readFile('utf-8')
   } catch (error) {
-    if (error?.code === 'ENOENT') return normalizeMeta()
-    throw filesystemError('could not read metadata', p, error)
+    if (error?.code === 'ENOENT') return { meta: normalizeMeta(), fileStat: null }
+    throw filesystemError('could not read metadata', displayPath, error)
+  } finally {
+    if (handle) await handle.close()
   }
 
   let parsed
   try {
     parsed = JSON.parse(raw)
   } catch {
-    throw new Error(`could not load metadata ${formatPathForDisplay(p)} (invalid JSON)`)
+    throw new Error(`could not load metadata ${formatPathForDisplay(displayPath)} (invalid JSON)`)
   }
   if (!isPlainObject(parsed)) {
-    throw new Error(`metadata root in ${formatPathForDisplay(p)} must be an object`)
+    throw new Error(`metadata root in ${formatPathForDisplay(displayPath)} must be an object`)
   }
-  return normalizeMeta(parsed)
+  return { meta: normalizeMeta(parsed), fileStat }
 }
 
 async function statIfExists(filePath, label) {
@@ -401,12 +427,17 @@ async function statIfExists(filePath, label) {
   }
 }
 
-async function rejectImportMetaAlias(importPath, metaPath) {
+async function rejectImportMetaAlias(importPath, metaPath, requestedMetaPath = metaPath) {
   const resolvedImportPath = path.resolve(importPath)
   const resolvedMetaPath = path.resolve(metaPath)
   if (resolvedImportPath === resolvedMetaPath) {
+    if (path.resolve(requestedMetaPath) !== resolvedImportPath) {
+      throw new Error(
+        `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(requestedMetaPath)} alias the same file`,
+      )
+    }
     throw new Error(
-      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(metaPath)} must be different`,
+      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(requestedMetaPath)} must be different`,
     )
   }
 
@@ -416,7 +447,7 @@ async function rejectImportMetaAlias(importPath, metaPath) {
   ])
   if (importStat && metaStat && importStat.dev === metaStat.dev && importStat.ino === metaStat.ino) {
     throw new Error(
-      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(metaPath)} alias the same file`,
+      `import path ${formatPathForDisplay(importPath)} and metadata path ${formatPathForDisplay(requestedMetaPath)} alias the same file`,
     )
   }
 }
@@ -438,9 +469,24 @@ async function resolveMetadataWritePath(requestedPath) {
   }
 }
 
-async function saveMeta(meta, metaPath) {
+async function verifyMetadataWriteTarget(targetPath, expectedStat, requestedPath) {
+  let targetStat
+  try {
+    targetStat = await fs.lstat(targetPath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw metadataTargetChangedError(requestedPath)
+    throw error
+  }
+  rejectMetadataHardlinks(targetStat, requestedPath)
+  if (!sameFileIdentity(targetStat, expectedStat)) {
+    throw metadataTargetChangedError(requestedPath)
+  }
+}
+
+async function saveMeta(meta, metaPath, options = {}) {
   const requestedPath = metaPath || DEFAULT_META_PATH
-  const p = await resolveMetadataWritePath(requestedPath)
+  const { targetPath, expectedStat } = options
+  const p = targetPath || await resolveMetadataWritePath(requestedPath)
   const dir = path.dirname(p)
   const tempPath = path.join(dir, `.${path.basename(p)}.${process.pid}.${randomUUID()}.tmp`)
   let handle
@@ -448,7 +494,12 @@ async function saveMeta(meta, metaPath) {
     await fs.mkdir(dir, { recursive: true })
     let mode = 0o600
     try {
-      mode = (await fs.stat(p)).mode & 0o777
+      const targetStat = await fs.stat(p)
+      if (expectedStat) rejectMetadataHardlinks(targetStat, requestedPath)
+      if (expectedStat && !sameFileIdentity(targetStat, expectedStat)) {
+        throw metadataTargetChangedError(requestedPath)
+      }
+      mode = targetStat.mode & 0o777
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error
     }
@@ -459,6 +510,7 @@ async function saveMeta(meta, metaPath) {
     await handle.sync()
     await handle.close()
     handle = undefined
+    if (expectedStat) await verifyMetadataWriteTarget(p, expectedStat, requestedPath)
     await fs.rename(tempPath, p)
   } catch (error) {
     if (handle) {
@@ -469,6 +521,7 @@ async function saveMeta(meta, metaPath) {
     try {
       await fs.unlink(tempPath)
     } catch {}
+    if (error?.code === 'METADATA_TARGET_CHANGED' || error?.code === 'METADATA_MULTIPLE_LINKS') throw error
     throw filesystemError('could not save metadata', requestedPath, error)
   }
   sbtplLog(`saved to ${formatPathForDisplay(requestedPath)}`)
@@ -810,8 +863,9 @@ async function serverGen(metaPath, outputDir) {
 }
 
 export async function serverImport(importPath, metaPath) {
-  const effectiveMetaPath = metaPath || DEFAULT_META_PATH
-  await rejectImportMetaAlias(importPath, effectiveMetaPath)
+  const requestedMetaPath = metaPath || DEFAULT_META_PATH
+  const effectiveMetaPath = await resolveMetadataWritePath(requestedMetaPath)
+  await rejectImportMetaAlias(importPath, effectiveMetaPath, requestedMetaPath)
 
   let raw
   try {
@@ -826,9 +880,14 @@ export async function serverImport(importPath, metaPath) {
     throw new Error(`invalid JSON in ${formatPathForDisplay(importPath)}`)
   }
 
-  const currentMeta = await loadMetaStrict(effectiveMetaPath)
+  const loadedMeta = await loadMetaStrict(effectiveMetaPath, requestedMetaPath)
+  const currentMeta = loadedMeta.meta
+  rejectMetadataHardlinks(loadedMeta.fileStat, requestedMetaPath)
   const { meta, warnings } = importServerConfig(config, currentMeta)
-  await saveMeta(meta, effectiveMetaPath)
+  await saveMeta(meta, requestedMetaPath, {
+    targetPath: effectiveMetaPath,
+    expectedStat: loadedMeta.fileStat,
+  })
 
   for (const warning of warnings) {
     console.warn(`[sbtpl.Warning] ${warning}`)

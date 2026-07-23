@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs, {
-  chmod, lstat, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile,
+  chmod, link, lstat, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -478,6 +478,32 @@ test('importServerConfig treats unusual inbound types as unsupported without lea
   assert.doesNotMatch(result.warnings.join('\n'), /prototype-secret|nested-secret|another-secret/)
 })
 
+test('importServerConfig rejects non-object inbound entries even when a valid inbound follows', () => {
+  const invalidInbounds = [
+    null,
+    42,
+    'inbound-secret-must-not-leak',
+    ['nested-secret-must-not-leak'],
+  ]
+
+  for (const invalidInbound of invalidInbounds) {
+    assert.throws(() => importServerConfig({
+      inbounds: [
+        invalidInbound,
+        {
+          type: 'vmess',
+          listen_port: 20086,
+          users: [{ uuid: 'safe-uuid' }],
+        },
+      ],
+    }, {}), (error) => {
+      assert.match(error.message, /inbound 0.*object/i)
+      assert.doesNotMatch(error.message, /secret-must-not-leak/)
+      return true
+    })
+  }
+})
+
 test('importServerConfig rejects control characters in unsupported inbound types without exposing values', () => {
   assert.throws(() => importServerConfig({
     inbounds: [
@@ -515,7 +541,7 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first v
       users: [{ password: 'trojan-secret' }],
       tls: {
         enabled: true,
-        acme: { domain: ['', 'first.example', 'second.example'] },
+        acme: { domain: ['first.example', 'second.example'] },
       },
     }],
   }, {})
@@ -533,6 +559,24 @@ test('importServerConfig maps ACME Trojan domain from server_name or the first v
     password: 'trojan-secret',
     tlsMode: 'acme',
     domain: 'first.example',
+  })
+})
+
+test('importServerConfig rejects mixed-type ACME domain arrays without exposing values', () => {
+  assert.throws(() => importServerConfig({
+    inbounds: [{
+      type: 'trojan',
+      listen_port: 443,
+      users: [{ password: 'trojan-secret-must-not-leak' }],
+      tls: {
+        enabled: true,
+        acme: { domain: [42, 'ok.example'] },
+      },
+    }],
+  }, {}), (error) => {
+    assert.match(error.message, /inbound 0.*tls\.acme\.domain\[0\].*non-empty string/i)
+    assert.doesNotMatch(error.message, /trojan-secret-must-not-leak|ok\.example/)
+    return true
   })
 })
 
@@ -1104,6 +1148,272 @@ test('server import rejects non-object metadata roots without rewriting them', a
     assert.match(result.stdout + result.stderr, /metadata root.*object/i)
     assert.deepEqual(await readFile(metaPath), original)
   }
+})
+
+test('server import rejects non-object inbound entries and mixed ACME domains without writes', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  const cases = [
+    {
+      config: {
+        inbounds: [
+          null,
+          { type: 'vmess', listen_port: 20086, users: [{ uuid: 'safe-uuid' }] },
+        ],
+      },
+      field: /inbound 0.*object/i,
+      secret: '',
+    },
+    {
+      config: {
+        inbounds: [
+          ['nested-secret-must-not-leak'],
+          { type: 'vmess', listen_port: 20086, users: [{ uuid: 'safe-uuid' }] },
+        ],
+      },
+      field: /inbound 0.*object/i,
+      secret: 'nested-secret-must-not-leak',
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan',
+          listen_port: 443,
+          users: [{ password: 'trojan-secret-must-not-leak' }],
+          tls: { enabled: true, acme: { domain: [42, 'ok.example'] } },
+        }],
+      },
+      field: /inbound 0.*tls\.acme\.domain\[0\].*non-empty string/i,
+      secret: 'trojan-secret-must-not-leak',
+    },
+  ]
+
+  for (const { config, field, secret } of cases) {
+    await writeFile(metaPath, originalMeta)
+    await writeFile(importPath, JSON.stringify(config))
+    const result = runServer('--import', importPath, '--meta', metaPath)
+    const output = result.stdout + result.stderr
+
+    assert.notEqual(result.status, 0)
+    assert.match(output, field)
+    if (secret) assert.doesNotMatch(output, new RegExp(secret))
+    assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+    assert.deepEqual(await readFile(metaPath), originalMeta)
+  }
+})
+
+test('server import rejects metadata hardlinks without changing either link', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const hardlinkPath = path.join(dir, 'meta-backup.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  await writeFile(metaPath, originalMeta)
+  await link(metaPath, hardlinkPath)
+  await writeFile(importPath, JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }))
+
+  const result = runServer('--import', importPath, '--meta', metaPath)
+  const output = result.stdout + result.stderr
+
+  assert.notEqual(result.status, 0)
+  assert.match(output, /hardlink|multiple links|nlink/i)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+  assert.deepEqual(await readFile(hardlinkPath), originalMeta)
+  assert.deepEqual((await readdir(dir)).sort(), ['meta-backup.json', 'meta.json', 'source.json'])
+})
+
+test('server import aborts if the metadata target gains a hardlink before rename', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const hardlinkPath = path.join(dir, 'meta-backup.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  const originalImport = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }))
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, originalImport)
+
+  const originalOpen = fs.open.bind(fs)
+  let linked = false
+  t.mock.method(fs, 'open', async (filePath, ...args) => {
+    const handle = await originalOpen(filePath, ...args)
+    if (filePath === metaPath && args[0] === 'r') {
+      const originalHandleReadFile = handle.readFile.bind(handle)
+      handle.readFile = async (...readArgs) => {
+        const contents = await originalHandleReadFile(...readArgs)
+        if (!linked) {
+          linked = true
+          await link(metaPath, hardlinkPath)
+        }
+        return contents
+      }
+    }
+    return handle
+  })
+
+  await assert.rejects(
+    serverImport(importPath, metaPath),
+    /hardlink|multiple links|nlink/i,
+  )
+  assert.deepEqual(await readFile(importPath), originalImport)
+  assert.deepEqual(await readFile(metaPath), originalMeta)
+  assert.deepEqual(await readFile(hardlinkPath), originalMeta)
+  assert.deepEqual((await readdir(dir)).sort(), ['meta-backup.json', 'meta.json', 'source.json'])
+})
+
+test('server import freezes the metadata symlink target before opening metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const targetPath = path.join(dir, 'meta-target.json')
+  const metaPath = path.join(dir, 'meta-link.json')
+  const originalImport = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }))
+  await writeFile(importPath, originalImport)
+  await writeFile(targetPath, JSON.stringify({
+    ip: '203.0.113.10',
+    protocols: [],
+  }))
+  await symlink(targetPath, metaPath)
+
+  const originalOpen = fs.open.bind(fs)
+  let swapped = false
+  t.mock.method(fs, 'open', async (filePath, ...args) => {
+    if (!swapped && args[0] === 'r' && (filePath === metaPath || filePath === targetPath)) {
+      swapped = true
+      await rm(metaPath)
+      await symlink(importPath, metaPath)
+    }
+    return originalOpen(filePath, ...args)
+  })
+
+  await serverImport(importPath, metaPath)
+
+  assert.deepEqual(await readFile(importPath), originalImport)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+  assert.equal(await readlink(metaPath), importPath)
+  const saved = JSON.parse(await readFile(targetPath, 'utf8'))
+  assert.equal(saved.ip, '203.0.113.10')
+  assert.deepEqual(saved.protocols, [{
+    type: 'vmess',
+    port: 20086,
+    uuid: 'safe-uuid',
+  }])
+})
+
+test('server import keeps writing the frozen target if the requested symlink changes after opening metadata', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const targetPath = path.join(dir, 'meta-target.json')
+  const metaPath = path.join(dir, 'meta-link.json')
+  const originalImport = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }))
+  await writeFile(importPath, originalImport)
+  await writeFile(targetPath, JSON.stringify({
+    ip: '203.0.113.10',
+    protocols: [],
+  }))
+  await symlink(targetPath, metaPath)
+
+  const originalOpen = fs.open.bind(fs)
+  let swapped = false
+  t.mock.method(fs, 'open', async (filePath, ...args) => {
+    const handle = await originalOpen(filePath, ...args)
+    if (args[0] === 'r' && (filePath === metaPath || filePath === targetPath)) {
+      const originalHandleReadFile = handle.readFile.bind(handle)
+      handle.readFile = async (...readArgs) => {
+        const contents = await originalHandleReadFile(...readArgs)
+        if (!swapped) {
+          swapped = true
+          await rm(metaPath)
+          await symlink(importPath, metaPath)
+        }
+        return contents
+      }
+    }
+    return handle
+  })
+
+  await serverImport(importPath, metaPath)
+
+  assert.deepEqual(await readFile(importPath), originalImport)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+  assert.equal(await readlink(metaPath), importPath)
+  const saved = JSON.parse(await readFile(targetPath, 'utf8'))
+  assert.equal(saved.ip, '203.0.113.10')
+  assert.deepEqual(saved.protocols, [{
+    type: 'vmess',
+    port: 20086,
+    uuid: 'safe-uuid',
+  }])
+})
+
+test('server import aborts if the frozen metadata target is replaced before rename', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'source.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const backupPath = path.join(dir, 'meta-original.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  const originalImport = Buffer.from(JSON.stringify({
+    inbounds: [{
+      type: 'vmess',
+      listen_port: 20086,
+      users: [{ uuid: 'safe-uuid' }],
+    }],
+  }))
+  await writeFile(metaPath, originalMeta)
+  await writeFile(importPath, originalImport)
+
+  const originalOpen = fs.open.bind(fs)
+  let swapped = false
+  t.mock.method(fs, 'open', async (filePath, ...args) => {
+    const handle = await originalOpen(filePath, ...args)
+    if (filePath === metaPath && args[0] === 'r') {
+      const originalHandleReadFile = handle.readFile.bind(handle)
+      handle.readFile = async (...readArgs) => {
+        const contents = await originalHandleReadFile(...readArgs)
+        if (!swapped) {
+          swapped = true
+          await rename(metaPath, backupPath)
+          await symlink(backupPath, metaPath)
+        }
+        return contents
+      }
+    }
+    return handle
+  })
+
+  await assert.rejects(
+    serverImport(importPath, metaPath),
+    /metadata target.*changed/i,
+  )
+  assert.deepEqual(await readFile(importPath), originalImport)
+  assert.deepEqual(await readFile(backupPath), originalMeta)
+  assert.equal((await lstat(metaPath)).isSymbolicLink(), true)
+  assert.equal(await readlink(metaPath), backupPath)
+  assert.deepEqual((await readdir(dir)).sort(), ['meta-original.json', 'meta.json', 'source.json'])
 })
 
 test('server import quotes control characters in path success and error diagnostics', async (t) => {
