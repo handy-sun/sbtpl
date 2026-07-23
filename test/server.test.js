@@ -350,6 +350,108 @@ test('importServerConfig rejects malformed or missing credentials without exposi
   }
 })
 
+test('importServerConfig rejects control characters in imported strings without exposing values', () => {
+  const cases = [
+    {
+      config: {
+        inbounds: [{
+          type: 'vmess',
+          listen_port: 20086,
+          users: [{ uuid: 'vmess-credential\u001b[31m\nFORGED' }],
+        }],
+      },
+      field: /inbound 0.*users\[0\]\.uuid/i,
+      secret: /vmess-credential|FORGED/,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan',
+          listen_port: 443,
+          users: [{ password: 'safe-password' }],
+          tls: {
+            enabled: true,
+            server_name: 'domain-secret\u0085FORGED',
+            certificate_path: '/srv/tls/server.crt',
+            key_path: '/srv/tls/server.key',
+          },
+        }],
+      },
+      field: /inbound 0.*tls\.server_name/i,
+      secret: /domain-secret|FORGED/,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'shadowsocks',
+          listen_port: 20085,
+          method: 'method-secret\u007fFORGED',
+          password: 'safe-password',
+        }],
+      },
+      field: /inbound 0.*method/i,
+      secret: /method-secret|FORGED/,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan',
+          listen_port: 443,
+          users: [{ password: 'safe-password' }],
+          tls: {
+            enabled: true,
+            acme: { domain: ['acme-secret\u001b[31mFORGED'] },
+          },
+        }],
+      },
+      field: /inbound 0.*tls\.acme\.domain\[0\]/i,
+      secret: /acme-secret|FORGED/,
+    },
+    {
+      config: {
+        log: { output: '/tmp/log-secret\nFORGED.log' },
+        inbounds: [{
+          type: 'vmess',
+          listen_port: 20086,
+          users: [{ uuid: 'safe-uuid' }],
+        }],
+      },
+      field: /log\.output/i,
+      secret: /log-secret|FORGED/,
+    },
+  ]
+
+  for (const { config, field, secret } of cases) {
+    assert.throws(() => importServerConfig(config, {}), (error) => {
+      assert.match(error.message, field)
+      assert.match(error.message, /control character/i)
+      assert.doesNotMatch(error.message, secret)
+      assert.doesNotMatch(error.message, /[\u0000-\u001f\u007f-\u009f]/u)
+      return true
+    })
+  }
+})
+
+test('importServerConfig allows normal Unicode in imported strings', () => {
+  const result = importServerConfig({
+    log: {
+      level: '警告',
+      output: '/日志/服务.log',
+    },
+    inbounds: [{
+      type: 'shadowsocks',
+      listen_port: 20085,
+      method: '加密算法',
+      password: '安全密码',
+    }],
+  }, {})
+
+  assert.equal(result.meta.protocols[0].method, '加密算法')
+  assert.equal(result.meta.protocols[0].password, '安全密码')
+  assert.equal(result.meta.settings.serverLogLevel, '警告')
+  assert.equal(result.meta.settings.serverLogFile, '/日志/服务.log')
+})
+
 test('importServerConfig rejects configs without supported inbounds', () => {
   assert.throws(
     () => importServerConfig({ inbounds: [{ type: 'http', password: 'not-a-warning' }] }, {}),
@@ -726,6 +828,67 @@ test('server import failure is concise, hides credentials, and preserves metadat
   assert.doesNotMatch(output, /credential-must-not-leak/)
   assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
   assert.deepEqual(await readFile(metaPath), originalMeta)
+})
+
+test('server import rejects control characters without terminal injection or metadata writes', async (t) => {
+  const dir = await withTempDir(t)
+  const importPath = path.join(dir, 'server-config.json')
+  const metaPath = path.join(dir, 'meta.json')
+  const originalMeta = Buffer.from('{"ip":"203.0.113.10","protocols":[]}\n')
+  const cases = [
+    {
+      config: {
+        inbounds: [{
+          type: 'vmess',
+          listen_port: 20086,
+          users: [{ uuid: 'vmess-credential\u001b[31m\nFORGED' }],
+        }],
+      },
+      field: /users\[0\]\.uuid/i,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'trojan',
+          listen_port: 443,
+          users: [{ password: 'safe-password' }],
+          tls: {
+            enabled: true,
+            server_name: 'domain-credential\u0085FORGED',
+            certificate_path: '/srv/tls/server.crt',
+            key_path: '/srv/tls/server.key',
+          },
+        }],
+      },
+      field: /tls\.server_name/i,
+    },
+    {
+      config: {
+        inbounds: [{
+          type: 'shadowsocks',
+          listen_port: 20085,
+          method: 'method-credential\u007fFORGED',
+          password: 'safe-password',
+        }],
+      },
+      field: /method/i,
+    },
+  ]
+
+  for (const { config, field } of cases) {
+    await writeFile(metaPath, originalMeta)
+    await writeFile(importPath, JSON.stringify(config))
+
+    const result = runServer('--import', importPath, '--meta', metaPath)
+    const output = result.stdout + result.stderr
+
+    assert.notEqual(result.status, 0)
+    assert.match(output, field)
+    assert.match(output, /control character/i)
+    assert.doesNotMatch(output, /\u001b|FORGED|credential/i)
+    assert.doesNotMatch(output, /\n\s+at\s|node:internal|file:\/\//i)
+    assert.deepEqual(await readFile(metaPath), originalMeta)
+  }
 })
 
 test('server rejects combining a subcommand with --import without writing metadata', async (t) => {

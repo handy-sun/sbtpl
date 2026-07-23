@@ -165,11 +165,18 @@ function filesystemError(action, filePath, error) {
   return new Error(`${action} ${formatPathForDisplay(filePath)} (${code})`)
 }
 
-function requireNonEmptyString(value, field) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new Error(`${field} must be a non-empty string`)
+function requireImportedString(value, field, options = {}) {
+  const { allowEmpty = false } = options
+  if (typeof value !== 'string') throw new Error(`${field} must be ${allowEmpty ? 'a string' : 'a non-empty string'}`)
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new Error(`${field} must not contain control characters`)
   }
+  if (!allowEmpty && value.trim() === '') throw new Error(`${field} must be a non-empty string`)
   return value
+}
+
+function requireNonEmptyString(value, field) {
+  return requireImportedString(value, field)
 }
 
 function importInboundPort(inbound, index) {
@@ -217,6 +224,11 @@ function importTrojanTls(tls, index) {
     if (!Array.isArray(tls.acme.domain)) {
       throw new Error(`inbound ${index} tls.acme.domain must be an array`)
     }
+    tls.acme.domain.forEach((domain, domainIndex) => {
+      if (typeof domain === 'string') {
+        requireImportedString(domain, `inbound ${index} tls.acme.domain[${domainIndex}]`, { allowEmpty: true })
+      }
+    })
     const acmeDomain = tls.acme.domain.find(domain => (
       typeof domain === 'string' && domain.trim() !== ''
     ))
@@ -259,10 +271,7 @@ function importServerLog(log) {
     imported.timestamp = log.timestamp
   }
   if (Object.hasOwn(log, 'output')) {
-    if (typeof log.output !== 'string') {
-      throw new Error('log.output must be a string')
-    }
-    imported.output = log.output
+    imported.output = requireImportedString(log.output, 'log.output', { allowEmpty: true })
   }
   return imported
 }
