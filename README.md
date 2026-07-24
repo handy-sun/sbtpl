@@ -103,6 +103,7 @@ sbtpl server set --ip 1.2.3.4
 
 # 添加协议
 sbtpl server add vmess
+sbtpl server add vmess --tag edge-vmess
 sbtpl server add trojan --domain yourdomain.com
 sbtpl server add ss --port 8388
 
@@ -118,11 +119,13 @@ sbtpl server gen -o ./output
 | 命令 | 说明 |
 |------|------|
 | (无参数) | 进入交互式菜单 |
-| `add <protocol>` | 添加协议配置 |
+| `add <protocol> [--tag <tag>]` | 添加协议配置；tag 唯一，默认使用 `协议-端口`，并用于服务端 inbound 与客户端 outbound |
 | `remove <protocol>` | 删除协议配置 |
 | `list` | 查看所有配置及 share links |
 | `set --ip <addr>` | 设置服务器 IP |
 | `gen [-o <dir>]` | 生成服务端/客户端配置文件及 NixOS 模块 |
+
+已有元数据会在下一次保存时补充默认 tag。
 
 ## 策略过滤格式
 

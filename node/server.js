@@ -18,9 +18,37 @@ const DEFAULT_SERVER_SETTINGS = {
   serverLogTimestamp: false,
   serverLogFile: '',
 }
+const RESERVED_PROTOCOL_TAGS = new Set(['direct', 'proxy'])
 
 export function buildServerInboundTag(protocol, port) {
   return `${protocol}-${port}`
+}
+
+function getDefaultProtocolTag(entry) {
+  if (typeof entry?.type !== 'string' || !Number.isInteger(entry.port)) return ''
+  return buildServerInboundTag(entry.type, entry.port)
+}
+
+function getProtocolTag(entry) {
+  if (typeof entry?.tag === 'string' && entry.tag.trim() !== '') return entry.tag.trim()
+  return getDefaultProtocolTag(entry)
+}
+
+export function validateProtocolTag(tag, protocols = [], currentEntry) {
+  if (typeof tag !== 'string' || tag.trim() === '') {
+    throw new Error('tag must be a non-empty string')
+  }
+  const normalizedTag = tag.trim()
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(normalizedTag)) {
+    throw new Error('tag must not contain control characters')
+  }
+  if (RESERVED_PROTOCOL_TAGS.has(normalizedTag)) {
+    throw new Error(`tag ${JSON.stringify(normalizedTag)} is reserved`)
+  }
+  if (protocols.some(entry => entry !== currentEntry && getProtocolTag(entry) === normalizedTag)) {
+    throw new Error(`tag ${JSON.stringify(normalizedTag)} already exists`)
+  }
+  return normalizedTag
 }
 
 export const PROTOCOL_REGISTRY = {
@@ -33,7 +61,7 @@ export const PROTOCOL_REGISTRY = {
     ],
     buildServerInbound(entry) {
       return {
-        type: 'vmess', tag: buildServerInboundTag('vmess', entry.port), listen: '::',
+        type: 'vmess', tag: getProtocolTag(entry), listen: '::',
         listen_port: entry.port,
         users: [{ uuid: entry.uuid }],
       }
@@ -44,7 +72,7 @@ export const PROTOCOL_REGISTRY = {
       bean.serverPort = entry.port
       bean.uuid = entry.uuid
       bean.encryption = 'auto'
-      bean.name = this.label
+      bean.name = getProtocolTag(entry) || this.label
       return bean
     },
     summary(entry) {
@@ -70,7 +98,7 @@ export const PROTOCOL_REGISTRY = {
         tls.acme = { domain: [entry.domain] }
       }
       return {
-        type: 'trojan', tag: buildServerInboundTag('trojan', entry.port), listen: '::',
+        type: 'trojan', tag: getProtocolTag(entry), listen: '::',
         listen_port: entry.port,
         users: [{ password: entry.password }],
         tls,
@@ -84,7 +112,7 @@ export const PROTOCOL_REGISTRY = {
       bean.sni = entry.domain || ip
       bean.security = 'tls'
       bean.allowInsecure = entry.tlsMode === 'self-signed'
-      bean.name = this.label
+      bean.name = getProtocolTag(entry) || this.label
       return bean
     },
     summary(entry) {
@@ -105,7 +133,7 @@ export const PROTOCOL_REGISTRY = {
     ],
     buildServerInbound(entry) {
       return {
-        type: 'shadowsocks', tag: buildServerInboundTag('ss', entry.port), listen: '::',
+        type: 'shadowsocks', tag: getProtocolTag(entry), listen: '::',
         listen_port: entry.port,
         method: entry.method,
         password: entry.password,
@@ -117,7 +145,7 @@ export const PROTOCOL_REGISTRY = {
       bean.serverPort = entry.port
       bean.method = entry.method
       bean.password = entry.password
-      bean.name = this.label
+      bean.name = getProtocolTag(entry) || this.label
       return bean
     },
     summary(entry) {
@@ -131,10 +159,17 @@ export const PROTOCOL_REGISTRY = {
 
 export function normalizeMeta(meta = {}) {
   const settings = meta.settings || {}
+  const protocols = Array.isArray(meta.protocols)
+    ? meta.protocols.map(entry => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return entry
+      const tag = getProtocolTag(entry)
+      return tag ? { ...entry, tag } : entry
+    })
+    : []
   return {
     ...meta,
     ip: typeof meta.ip === 'string' ? meta.ip : '',
-    protocols: Array.isArray(meta.protocols) ? meta.protocols : [],
+    protocols,
     settings: {
       ...settings,
       serverLogTimestamp: settings.serverLogTimestamp === true ? true : DEFAULT_SERVER_SETTINGS.serverLogTimestamp,
@@ -183,6 +218,7 @@ function parseServerArgs(argv) {
       'method': { type: 'string' },
       'password': { type: 'string' },
       'uuid': { type: 'string' },
+      'tag': { type: 'string' },
       'ip': { type: 'string' },
       'meta': { type: 'string' },
       'tls-mode': { type: 'string' },
@@ -249,7 +285,7 @@ function printShareLinks(meta) {
     const reg = PROTOCOL_REGISTRY[entry.type]
     if (!reg) return
     const link = getShareLink(entry, meta.ip)
-    console.log(`\n[${i + 1}. ${reg.label}]`)
+    console.log(`\n[${i + 1}. ${getProtocolTag(entry)}]`)
     console.log(link)
   })
 }
@@ -265,7 +301,7 @@ export function buildServerLog(settings = {}) {
 }
 
 function nixString(value) {
-  return JSON.stringify(value)
+  return JSON.stringify(value).replaceAll('${', '\\${')
 }
 
 async function serverAdd(protocol, values, metaPath) {
@@ -301,6 +337,12 @@ async function serverAdd(protocol, values, metaPath) {
       sbtplErr(`--${field.name} is required for ${protocol}`)
       process.exit(1)
     }
+  }
+  try {
+    entry.tag = validateProtocolTag(values.tag ?? getProtocolTag(entry), meta.protocols)
+  } catch (error) {
+    sbtplErr(error.message)
+    process.exit(1)
   }
 
   // protocol-specific validation
@@ -349,7 +391,7 @@ async function serverList(metaPath) {
   meta.protocols.forEach((entry, i) => {
     const reg = PROTOCOL_REGISTRY[entry.type]
     if (!reg) return
-    console.log(`${i + 1}. ${reg.label}  ${reg.summary(entry)}`)
+    console.log(`${i + 1}. [${getProtocolTag(entry)}] ${reg.label}  ${reg.summary(entry)}`)
   })
   printShareLinks(meta)
 }
@@ -404,27 +446,27 @@ async function serverGen(metaPath, outputDir) {
   // build NixOS module
   const nixInbounds = inbounds.map(ib => {
     const lines = ['        {']
-    lines.push(`          type = "${ib.type}";`)
-    lines.push(`          tag = "${ib.tag}";`)
-    lines.push(`          listen = "::";`)
+    lines.push(`          type = ${nixString(ib.type)};`)
+    lines.push(`          tag = ${nixString(ib.tag)};`)
+    lines.push(`          listen = ${nixString(ib.listen)};`)
     lines.push(`          listen_port = ${ib.listen_port};`)
     if (ib.type === 'shadowsocks') {
-      lines.push(`          method = "${ib.method}";`)
-      lines.push(`          password = "${ib.password}";`)
+      lines.push(`          method = ${nixString(ib.method)};`)
+      lines.push(`          password = ${nixString(ib.password)};`)
     } else if (ib.type === 'vmess') {
-      lines.push(`          users = [ { uuid = "${ib.users[0].uuid}"; } ];`)
+      lines.push(`          users = [ { uuid = ${nixString(ib.users[0].uuid)}; } ];`)
     } else if (ib.type === 'trojan') {
-      lines.push(`          users = [ { password = "${ib.users[0].password}"; } ];`)
+      lines.push(`          users = [ { password = ${nixString(ib.users[0].password)}; } ];`)
       lines.push(`          tls = {`)
       lines.push(`            enabled = true;`)
-      if (ib.tls.server_name) lines.push(`            server_name = "${ib.tls.server_name}";`)
+      if (ib.tls.server_name) lines.push(`            server_name = ${nixString(ib.tls.server_name)};`)
       if (ib.tls.acme) {
         lines.push(`            acme = {`)
-        lines.push(`              domain = [ ${ib.tls.acme.domain.map(d => `"${d}"`).join(' ')} ];`)
+        lines.push(`              domain = [ ${ib.tls.acme.domain.map(nixString).join(' ')} ];`)
         lines.push(`            };`)
       } else {
-        if (ib.tls.certificate_path) lines.push(`            certificate_path = "${ib.tls.certificate_path}";`)
-        if (ib.tls.key_path) lines.push(`            key_path = "${ib.tls.key_path}";`)
+        if (ib.tls.certificate_path) lines.push(`            certificate_path = ${nixString(ib.tls.certificate_path)};`)
+        if (ib.tls.key_path) lines.push(`            key_path = ${nixString(ib.tls.key_path)};`)
       }
       lines.push(`          };`)
     }
@@ -542,7 +584,7 @@ function renderMenuHeader(meta) {
     lines.push('')
     meta.protocols.forEach((entry, i) => {
       const reg = PROTOCOL_REGISTRY[entry.type]
-      lines.push(`  ${CYAN}${i + 1}${RESET}. ${GREEN}${reg?.label || entry.type}${RESET}  ${DIM}${reg?.summary(entry) || ''}${RESET}`)
+      lines.push(`  ${CYAN}${i + 1}${RESET}. ${GREEN}${reg?.label || entry.type}${RESET}  ${DIM}[${getProtocolTag(entry)}] ${reg?.summary(entry) || ''}${RESET}`)
     })
   }
   lines.push('')
@@ -594,6 +636,14 @@ async function interactiveAdd(rl, meta) {
     }
   }
 
+  const defaultTag = getProtocolTag(entry)
+  const tagAnswer = await ask(rl, `  节点 tag ${DIM}[默认: ${defaultTag}]${RESET}: `)
+  try {
+    entry.tag = validateProtocolTag(tagAnswer.trim() || defaultTag, meta.protocols)
+  } catch (error) {
+    return renderStatus(error.message, 'err')
+  }
+
   meta.protocols.push(entry)
   const link = getShareLink(entry, meta.ip)
   return renderStatus(`已添加 ${reg.label}: ${reg.summary(entry)}`) + `\n\n  ${DIM}share link:${RESET}\n  ${link}`
@@ -603,7 +653,7 @@ async function interactiveRemove(rl, meta) {
   if (!meta.protocols.length) return renderStatus('没有可删除的节点', 'warn')
   const labels = meta.protocols.map((e) => {
     const reg = PROTOCOL_REGISTRY[e.type]
-    return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
+    return `[${getProtocolTag(e)}] ${reg?.label || e.type}  ${reg?.summary(e) || ''}`
   })
   const idx = await choose(rl, '选择要删除的节点:', labels)
   if (idx === null) return null
@@ -615,7 +665,7 @@ async function interactiveModify(rl, meta) {
   if (!meta.protocols.length) return renderStatus('没有可修改的节点', 'warn')
   const labels = meta.protocols.map((e) => {
     const reg = PROTOCOL_REGISTRY[e.type]
-    return `${reg?.label || e.type}  ${reg?.summary(e) || ''}`
+    return `[${getProtocolTag(e)}] ${reg?.label || e.type}  ${reg?.summary(e) || ''}`
   })
   const idx = await choose(rl, '选择要修改的节点:', labels)
   if (idx === null) return null
@@ -624,16 +674,25 @@ async function interactiveModify(rl, meta) {
   const reg = PROTOCOL_REGISTRY[entry.type]
   if (!reg) return null
 
-  const fieldIdx = await choose(rl, '选择修改项:', reg.editableFields)
+  const editableFields = [...reg.editableFields, 'tag']
+  const fieldIdx = await choose(rl, '选择修改项:', editableFields)
   if (fieldIdx === null) return null
 
-  const fieldName = reg.editableFields[fieldIdx]
+  const fieldName = editableFields[fieldIdx]
   const currentVal = entry[fieldName]
   const answer = await ask(rl, `  ${fieldName} ${DIM}[当前: ${currentVal}]${RESET}: `)
   if (!answer.trim()) return renderStatus('未修改', 'warn')
 
-  const fieldDef = reg.fields.find(f => f.name === fieldName)
-  entry[fieldName] = fieldDef?.type === 'number' ? safeParseInt(answer.trim(), currentVal) : answer.trim()
+  if (fieldName === 'tag') {
+    try {
+      entry.tag = validateProtocolTag(answer.trim(), meta.protocols, entry)
+    } catch (error) {
+      return renderStatus(error.message, 'err')
+    }
+  } else {
+    const fieldDef = reg.fields.find(f => f.name === fieldName)
+    entry[fieldName] = fieldDef?.type === 'number' ? safeParseInt(answer.trim(), currentVal) : answer.trim()
+  }
   const link = getShareLink(entry, meta.ip)
   return renderStatus(`已更新 ${fieldName} = ${entry[fieldName]}`) + `\n\n  ${link}`
 }
@@ -812,7 +871,7 @@ export async function serverDispatch(argv) {
   switch (args.command) {
     case 'add':
       if (!args.protocol) {
-        sbtplErr('usage: sbtpl server add <protocol> [--port ...] [--domain ...]')
+        sbtplErr('usage: sbtpl server add <protocol> [--tag ...] [--port ...] [--domain ...]')
         process.exit(1)
       }
       await serverAdd(args.protocol, args.values, metaPath)

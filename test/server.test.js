@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 import {
   buildServerInboundTag,
@@ -7,8 +11,15 @@ import {
   getLocalIpFromInterfaces,
   normalizeMeta,
   resolveServerIpInput,
+  validateProtocolTag,
   PROTOCOL_REGISTRY,
 } from '../node/server.js'
+
+const serverScript = path.resolve('node/server.js')
+
+function runServer(...args) {
+  return spawnSync(process.execPath, [serverScript, ...args], { encoding: 'utf8' })
+}
 
 test('buildServerInboundTag uses protocol and port', () => {
   assert.equal(buildServerInboundTag('vmess', 20086), 'vmess-20086')
@@ -71,6 +82,72 @@ test('normalizeMeta applies default server settings for older metadata', () => {
   })
 })
 
+test('normalizeMeta assigns tags to legacy protocols and keeps explicit tags', () => {
+  const meta = normalizeMeta({
+    protocols: [
+      { type: 'vmess', port: 20086, uuid: 'vmess-uuid' },
+      { type: 'trojan', port: 443, password: 'trojan-password', tag: 'edge-trojan' },
+    ],
+  })
+
+  assert.equal(meta.protocols[0].tag, 'vmess-20086')
+  assert.equal(meta.protocols[1].tag, 'edge-trojan')
+})
+
+test('validateProtocolTag rejects duplicate node tags but permits the current node', () => {
+  const protocols = [
+    { type: 'vmess', port: 20086, tag: 'edge-a' },
+    { type: 'trojan', port: 443, tag: 'edge-b' },
+  ]
+
+  assert.equal(validateProtocolTag(' edge-c ', protocols), 'edge-c')
+  assert.equal(validateProtocolTag('edge-a', protocols, protocols[0]), 'edge-a')
+  assert.throws(() => validateProtocolTag('edge-a', protocols), /tag.*already exists/i)
+  assert.throws(() => validateProtocolTag('direct', protocols), /tag.*reserved/i)
+  assert.throws(() => validateProtocolTag('proxy', protocols), /tag.*reserved/i)
+  assert.throws(() => validateProtocolTag('   ', protocols), /tag.*non-empty/i)
+})
+
+test('server add persists custom tags and rejects duplicate tags', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-tag-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer('add', 'vmess', '--tag', 'edge-a', '--meta', metaPath)
+  assert.equal(added.status, 0, added.stderr)
+
+  const meta = JSON.parse(await readFile(metaPath, 'utf8'))
+  assert.equal(meta.protocols[0].tag, 'edge-a')
+
+  const outputDir = path.join(dir, 'output')
+  const generated = runServer('gen', '-o', outputDir, '--meta', metaPath)
+  assert.equal(generated.status, 0, generated.stderr)
+  const serverConfig = JSON.parse(await readFile(path.join(outputDir, 'server-config.json'), 'utf8'))
+  const clientConfig = JSON.parse(await readFile(path.join(outputDir, 'client-config.json'), 'utf8'))
+  assert.equal(serverConfig.inbounds[0].tag, 'edge-a')
+  assert.ok(clientConfig.outbounds.some(outbound => outbound.tag === 'edge-a'))
+
+  const duplicate = runServer('add', 'trojan', '--domain', 'example.com', '--tag', 'edge-a', '--meta', metaPath)
+  assert.notEqual(duplicate.status, 0)
+  assert.match(duplicate.stdout + duplicate.stderr, /tag.*already exists/i)
+})
+
+test('server generation escapes tag interpolation in the Nix module', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-tag-nix-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  const outputDir = path.join(dir, 'output')
+  const tag = 'edge-${builtins.abort "pwn"}'
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  assert.equal(runServer('add', 'vmess', '--tag', tag, '--meta', metaPath).status, 0)
+  assert.equal(runServer('gen', '-o', outputDir, '--meta', metaPath).status, 0)
+
+  const nixModule = await readFile(path.join(outputDir, 'sing-box-server.nix'), 'utf8')
+  assert.doesNotMatch(nixModule, /(?<!\\)\$\{builtins\.abort/)
+})
+
 test('buildServerLog maps software settings to server log config', () => {
   assert.deepEqual(buildServerLog({
     serverLogTimestamp: false,
@@ -99,6 +176,15 @@ test('Trojan buildServerInbound with acme mode uses acme field', () => {
     server_name: 'example.com',
     acme: { domain: ['example.com'] },
   })
+})
+
+test('server and client outputs use the persisted protocol tag', () => {
+  const entry = { tag: 'edge-vmess', port: 20086, uuid: 'test-uuid' }
+  const inbound = PROTOCOL_REGISTRY.vmess.buildServerInbound(entry)
+  const bean = PROTOCOL_REGISTRY.vmess.metaToBean(entry, '203.0.113.10')
+
+  assert.equal(inbound.tag, 'edge-vmess')
+  assert.equal(bean.name, 'edge-vmess')
 })
 
 test('Trojan buildServerInbound with self-signed mode uses certificate paths', () => {
