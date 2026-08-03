@@ -134,7 +134,7 @@ sbtpl server gen -o ./output
 @outboundTag-tagRegex...
 ```
 
-示例：`@🌐Proxy@⚡UrlTest-~^(?!.*(aote|流量|到期|过滤|官网)).*$`
+示例：`@🌐Proxy@⚡UrlTest-~^(?!.*(流量|套餐|重置)).*$`
 
 - `@` 分隔规则组
 - `-` 前是目标 outbound 标签的正则，后是节点标签的筛选正则
@@ -145,8 +145,8 @@ sbtpl server gen -o ./output
 sbtpl 使用 JSON 模板生成配置。默认模板包含：
 - DNS 配置（fakeip）
 - 入站配置（mixed + 可选 TUN）
-- 路由规则（27 条 rule_set 规则）
-- 预定义出站选择器（🎯Direct、🌐Proxy、💬AI、🚀LowLatency、⚡UrlTest）
+- 路由规则（17 组基于 rule_set 的规则）
+- 预定义出站选择器（🎯Direct、🌐Proxy、🎮Steam、💬AI、🚀LowLatency、⚡UrlTest）
 
 你可以使用 `-t` 参数指定自定义模板。
 

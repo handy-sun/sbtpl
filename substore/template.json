@@ -103,6 +103,15 @@
       "interrupt_exist_connections": true
     },
     {
+      "tag": "🎮Steam",
+      "type": "selector",
+      "outbounds": [
+        "⚡UrlTest",
+        "🎯Direct"
+      ],
+      "interrupt_exist_connections": true
+    },
+    {
       "tag": "💬AI",
       "type": "selector",
       "outbounds": [
@@ -294,11 +303,17 @@
         "outbound": "🎯Direct"
       },
       {
+        "rule_set": "game-download",
+        "outbound": "🎯Direct"
+      },
+      {
+        "rule_set": "geosite-steam",
+        "outbound": "🎮Steam"
+      },
+      {
         "rule_set": [
-          "geosite-steam",
           "geosite-category-games",
-          "geosite-dmm",
-          "game-download"
+          "geosite-dmm"
         ],
         "outbound": "🎯Direct"
       },
