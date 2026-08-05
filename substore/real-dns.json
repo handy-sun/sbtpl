@@ -474,9 +474,10 @@
       {
         "tag": "claude",
         "type": "remote",
-        "format": "source",
-        "url": "https://codeberg.org/handy/proxyconfig/raw/branch/main/sing-box/proxy/claude.json",
+        "format": "binary",
+        "url": "https://ghfast.top/https://raw.githubusercontent.com/handy-sun/dotfiles/main/sbsrs/claude.srs",
         "download_detour": "🎯Direct"
-      }]
+      }
+    ]
   }
 }
