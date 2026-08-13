@@ -2,7 +2,7 @@
 
 set shell := ["bash", "-uc"]
 
-subLine := "http://handyMini:3001/c53248f264d9997/download/collection/main?target=URI"
+subLine := "http://fngo:3001/c53248f264d9997/download/collection/main?target=URI"
 
 policy-filter := '@🌐Proxy@⚡UrlTest-~^(?!.*(kooya|流量|套餐|重置)).*$@💬AI@🚀LowLatency@🎮Steam'
 
