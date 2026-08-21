@@ -7,6 +7,7 @@
 // 把匹配 /港|hk|hongkong|kong kong|🇭🇰/i  (跟在 - 后面, ～ 表示忽略大小写) 的节点插入匹配 /hk|hk-auto/i 的 outbound 中
 // ...
 // 可选参数: includeUnsupportedProxy 包含官方/商店版不支持的协议 SSR. 用法: `&includeUnsupportedProxy=true`
+// 可选参数: ipv6 启用 TUN IPv6 地址(默认关闭). 用法: `&ipv6=true`
 
 // 支持传入订阅 URL. 参数为 url. 记得 url 需要 encodeURIComponent.
 // 例如: http://a.com?token=123 应使用 url=http%3A%2F%2Fa.com%3Ftoken%3D123
@@ -31,7 +32,7 @@ const tun_tag = 'tun-in'
 const tun_inbound = {
   type: 'tun',
   tag: tun_tag,
-  address: [ '172.19.0.1/30', 'fdfe:dcba:9876::1/126' ],
+  address: [ '172.19.0.1/30' ],
   mtu: 9000,
   auto_route: true,
   strict_route: true,
@@ -51,9 +52,10 @@ const route_exclude_address = [
 
 log(`🚀 开始`)
 
-let { type, name, outbound, ruleset, includeUnsupportedProxy, url, ctrlapi, mixport, tun, linux, icmp, android, output } = $arguments
+let { type, name, outbound, ruleset, includeUnsupportedProxy, url, ctrlapi, mixport, tun, linux, icmp, android, ipv6, output } = $arguments
+const ipv6Enabled = ipv6 === true || /^(1|true|yes|on)$/i.test(String(ipv6))
 
-log(`传入参数 type: ${type}, name: ${name}, outbound: ${outbound}, ruleset: ${ruleset}, includeUnsupportedProxy: ${includeUnsupportedProxy}, url: ${url}, ctrlapi: ${ctrlapi}, mixport: ${mixport}, tun: ${tun}, linux: ${linux}, icmp: ${icmp}, android: ${android}, output=${output};`)
+log(`传入参数 type: ${type}, name: ${name}, outbound: ${outbound}, ruleset: ${ruleset}, includeUnsupportedProxy: ${includeUnsupportedProxy}, url: ${url}, ctrlapi: ${ctrlapi}, mixport: ${mixport}, tun: ${tun}, linux: ${linux}, icmp: ${icmp}, android: ${android}, ipv6: ${ipv6Enabled}, output=${output};`)
 
 type = /^1$|col|组合/i.test(type) ? 'collection' : 'subscription'
 
@@ -86,6 +88,11 @@ if (mixport != default_mixport) {
 
 if (tun) {
   log(`⓵.⓷  tun 配置`)
+  tun_inbound.address = [
+    '172.19.0.1/30',
+    ...(ipv6Enabled ? ['fdfe:dcba:9876::1/126'] : []),
+  ]
+  if (ipv6Enabled) log(`📝 开启了 tun 的 IPv6 地址`)
   if (config.route.rules[0]?.action === 'sniff') { // 默认开头一个规则是sniff的, 这里添加它的 inbound 为 tun_tag
     if (android) {
       config.inbounds.push(tun_inbound)

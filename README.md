@@ -50,6 +50,7 @@ sbtpl -s '<订阅链接>' -o config.json
 | `--log-file` | `-l` | 日志文件路径，设为空字符串禁用 |
 | `--android` | | Android 模式 |
 | `--linux` | | Linux TUN 模式 |
+| `--ipv6` | | 显式启用 TUN IPv6 地址（默认关闭） |
 | `--windows` | | Windows TUN 模式 |
 | `--icmp` | | ICMP 透传 |
 
@@ -73,6 +74,11 @@ sbtpl -s 'https://example.com/subscription' --tun --icmp --windows -o config.jso
 **生成 Linux TUN 配置：**
 ```bash
 sbtpl -s 'https://example.com/subscription' --tun --linux -o config.json
+```
+
+**生成带 IPv6 的 Linux TUN 配置：**
+```bash
+sbtpl -s 'https://example.com/subscription' --tun --linux --ipv6 -o config.json
 ```
 
 **生成 Android TUN 配置：**

@@ -2388,7 +2388,7 @@ function getTags(proxies, regex) {
 function convert2RegExp(rulePattern) {
   return new RegExp(rulePattern.replace('~', ''), rulePattern.includes('~') ? 'i' : undefined)
 }
-function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows) {
+function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows, isIpv6 = false) {
   const default_mixport = 2334
   const default_ctrlapi = 9090
 
@@ -2396,7 +2396,10 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
   const tun_inbound = {
     type: 'tun',
     tag: tun_tag,
-    address: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+    address: [
+      '172.19.0.1/30',
+      ...(isIpv6 ? ['fdfe:dcba:9876::1/126'] : []),
+    ],
     mtu: 9000,
     auto_route: true,
     strict_route: true,
@@ -2556,6 +2559,7 @@ async function run() {
       'linux': isLinux,
       'icmp': isIcmp,
       'windows': IsWindows,
+      'ipv6': isIpv6,
       'version': version,
     },
   } = parseArgs({
@@ -2612,6 +2616,10 @@ async function run() {
         default: false,
       },
       'windows': {
+        type: 'boolean',
+        default: false,
+      },
+      'ipv6': {
         type: 'boolean',
         default: false,
       },
@@ -2686,7 +2694,7 @@ async function run() {
     templateStr = defaultTemplateStr;
   }
 
-  const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows);
+  const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows, isIpv6);
 
   const config = insertProxies(confNew, proxies || [], policyFilter);
 

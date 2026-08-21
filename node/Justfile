@@ -47,5 +47,8 @@ icmp-tun:
 linux-tun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --linux -o linux-tun.json
 
+linux-tun-ipv6:
+  node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --linux --ipv6 -o linux-tun-ipv6.json
+
 android-tun:
   node base.js --subscribe-link '{{subLine}}' --policy-filter '{{policy-filter}}' --tun --android -o android-tun.json
