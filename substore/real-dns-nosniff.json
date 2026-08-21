@@ -286,14 +286,14 @@
         "tag": "geoip-cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://ghfast.top/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geoip/geoip-cn.srs",
+        "url": "https://gh-proxy.org/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geoip/geoip-cn.srs",
         "download_detour": "🎯Direct"
       },
       {
         "tag": "geosite-cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://ghfast.top/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-cn.srs",
+        "url": "https://gh-proxy.org/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-cn.srs",
         "download_detour": "🎯Direct"
       },
       {
@@ -307,14 +307,14 @@
         "tag": "geosite-category-ai-!cn",
         "type": "remote",
         "format": "binary",
-        "url": "https://ghfast.top/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-category-ai-!cn.srs",
+        "url": "https://gh-proxy.org/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-category-ai-!cn.srs",
         "download_detour": "🎯Direct"
       },
       {
         "tag": "geosite-jetbrains-ai",
         "type": "remote",
         "format": "binary",
-        "url": "https://ghfast.top/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-jetbrains-ai.srs",
+        "url": "https://gh-proxy.org/https://raw.githubusercontent.com/2dust/sing-box-rules/rule-set-geosite/geosite-jetbrains-ai.srs",
         "download_detour": "🎯Direct"
       },
       {
