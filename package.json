@@ -5,6 +5,7 @@
   "type": "module",
   "main": "node/base.js",
   "scripts": {
+    "generate:templates": "node substore/template.js --write",
     "test": "node --test"
   },
   "bin": {

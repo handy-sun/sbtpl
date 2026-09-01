@@ -240,7 +240,15 @@ config.outbounds.map(outboundItem => {
   })
 })
 
-config.outbounds.push(...proxies)
+const wireGuardEndpoints = proxies
+  .filter(proxy => proxy.type === 'wireguard')
+  .map(toWireGuardEndpoint)
+const proxyOutbounds = proxies.filter(proxy => proxy.type !== 'wireguard')
+
+config.outbounds.push(...proxyOutbounds)
+if (wireGuardEndpoints.length > 0 || Array.isArray(config.endpoints)) {
+  config.endpoints = [...(config.endpoints || []), ...wireGuardEndpoints]
+}
 
 $content = JSON.stringify(config, null, 2)
 
@@ -249,6 +257,29 @@ log(`结束`)
 // ----------------- 辅助函数 -----------------
 function getTags(proxies, regex) {
   return (regex ? proxies.filter(p => regex.test(p.tag)) : proxies).map(p => p.tag)
+}
+function toWireGuardEndpoint(proxy) {
+  if (Array.isArray(proxy.peers)) return proxy
+
+  const peer = {
+    address: proxy.server,
+    port: proxy.server_port,
+    public_key: proxy.peer_public_key,
+    allowed_ips: ['0.0.0.0/0', '::/0'],
+  }
+  if (proxy.pre_shared_key) peer.pre_shared_key = proxy.pre_shared_key
+  if (proxy.reserved) peer.reserved = proxy.reserved
+
+  return {
+    type: 'wireguard',
+    tag: proxy.tag,
+    system: proxy.system_interface,
+    name: proxy.interface_name,
+    mtu: proxy.mtu,
+    address: proxy.local_address,
+    private_key: proxy.private_key,
+    peers: [peer],
+  }
 }
 function log(v) {
   console.log(`[sing-box 📦] ${v}`)

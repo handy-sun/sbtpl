@@ -89,13 +89,16 @@ export const PROTOCOL_REGISTRY = {
       { name: 'tlsMode', type: 'string', default: 'acme', prompt: 'TLS 模式 (acme/self-signed)' },
       { name: 'domain', type: 'string', prompt: '域名 (TLS server_name)' },
     ],
-    buildServerInbound(entry) {
+    buildServerInbound(entry, certificateProviderTag) {
       const tls = { enabled: true, server_name: entry.domain || '' }
       if (entry.tlsMode === 'self-signed') {
         tls.certificate_path = '/etc/sing-box/tls.cer'
         tls.key_path = '/etc/sing-box/tls.key'
       } else {
-        tls.acme = { domain: [entry.domain] }
+        tls.certificate_provider = certificateProviderTag || {
+          type: 'acme',
+          domain: [entry.domain],
+        }
       }
       return {
         type: 'trojan', tag: getProtocolTag(entry), listen: '::',
@@ -412,10 +415,20 @@ async function serverGen(metaPath, outputDir) {
     process.exit(1)
   }
 
+  const certificateProviders = meta.protocols
+    .filter(entry => entry.type === 'trojan' && (entry.tlsMode || 'acme') === 'acme')
+    .map(entry => ({
+      type: 'acme',
+      tag: `${getProtocolTag(entry)}-acme`,
+      domain: [entry.domain],
+    }))
   // build server inbounds
   const inbounds = meta.protocols.map(entry => {
     const reg = PROTOCOL_REGISTRY[entry.type]
-    return reg.buildServerInbound(entry)
+    const certificateProviderTag = entry.type === 'trojan' && (entry.tlsMode || 'acme') === 'acme'
+      ? `${getProtocolTag(entry)}-acme`
+      : undefined
+    return reg.buildServerInbound(entry, certificateProviderTag)
   })
   const serverLog = buildServerLog(meta.settings)
   const serverConfig = {
@@ -423,6 +436,7 @@ async function serverGen(metaPath, outputDir) {
     inbounds,
     outbounds: [{ type: 'direct', tag: 'direct' }],
   }
+  if (certificateProviders.length > 0) serverConfig.certificate_providers = certificateProviders
 
   // build client outbounds
   const clientOutboundTags = []
@@ -460,10 +474,8 @@ async function serverGen(metaPath, outputDir) {
       lines.push(`          tls = {`)
       lines.push(`            enabled = true;`)
       if (ib.tls.server_name) lines.push(`            server_name = ${nixString(ib.tls.server_name)};`)
-      if (ib.tls.acme) {
-        lines.push(`            acme = {`)
-        lines.push(`              domain = [ ${ib.tls.acme.domain.map(nixString).join(' ')} ];`)
-        lines.push(`            };`)
+      if (ib.tls.certificate_provider) {
+        lines.push(`            certificate_provider = ${nixString(ib.tls.certificate_provider)};`)
       } else {
         if (ib.tls.certificate_path) lines.push(`            certificate_path = ${nixString(ib.tls.certificate_path)};`)
         if (ib.tls.key_path) lines.push(`            key_path = ${nixString(ib.tls.key_path)};`)
@@ -481,6 +493,16 @@ async function serverGen(metaPath, outputDir) {
   if (serverLog.output) {
     nixLogLines.push(`        output = ${nixString(serverLog.output)};`)
   }
+  const nixCertificateProviders = certificateProviders.length > 0
+    ? `      certificate_providers = [
+${certificateProviders.map(provider => `        {
+          type = ${nixString(provider.type)};
+          tag = ${nixString(provider.tag)};
+          domain = [ ${provider.domain.map(nixString).join(' ')} ];
+        }`).join('\n')}
+      ];
+`
+    : ''
 
   const nixModule = `{ config, pkgs, ... }:
 {
@@ -499,7 +521,7 @@ ${nixInbounds}
           tag = "direct";
         }
       ];
-    };
+${nixCertificateProviders}    };
   };
 }
 `

@@ -7,7 +7,7 @@ import crypto from 'node:crypto'
 import fs from 'fs/promises';
 import { execSync } from 'node:child_process';
 
-import defaultTemplateStr from '../substore/template.json' with { type: 'json' }
+import { createTemplate } from '../substore/template.js'
 import pkg from '../package.json' with { type: 'json' }
 
 // --- 工具函数 --- [[[1
@@ -1636,7 +1636,7 @@ function buildSingboxHysteria(bean, options) {
       auth_str: bean.authPayloadType === 1 ? bean.authPayload : undefined,
       auth: bean.authPayloadType === 2 ? bean.authPayload : undefined,
       hop_interval: `${bean.hopInterval}s`,
-      disable_mtu_discovery: bean.disableMtuDiscovery,
+      disable_path_mtu_discovery: bean.disableMtuDiscovery,
       tls: tls,
     };
     if (isMultiPort(bean.serverPorts)) {
@@ -1645,10 +1645,10 @@ function buildSingboxHysteria(bean, options) {
       outbound.server_port = safeParseInt(bean.serverPorts);
     }
     if (bean.streamReceiveWindow > 0) {
-      outbound.recv_window_conn = bean.streamReceiveWindow;
+      outbound.stream_receive_window = `${bean.streamReceiveWindow} B`;
     }
     if (bean.connectionReceiveWindow > 0) {
-      outbound.recv_window = bean.connectionReceiveWindow;
+      outbound.connection_receive_window = `${bean.connectionReceiveWindow} B`;
     }
     return outbound;
   } else {
@@ -1713,23 +1713,27 @@ function buildSingboxTuic(bean, options) {
  * @returns {object} Outbound 对象
  */
 function buildSingboxWireguard(bean) {
-  const outbound = {
-    tag: bean.displayName(),
-    type: 'wireguard',
-    server: bean.serverAddress,
-    server_port: bean.serverPort,
-    local_address: listByLineOrComma(bean.localAddress),
-    private_key: bean.privateKey,
-    peer_public_key: bean.peerPublicKey,
-    mtu: bean.mtu,
+  const peer = {
+    address: bean.serverAddress,
+    port: bean.serverPort,
+    public_key: bean.peerPublicKey,
+    allowed_ips: ['0.0.0.0/0', '::/0'],
   };
   if (bean.peerPreSharedKey) {
-    outbound.pre_shared_key = bean.peerPreSharedKey;
+    peer.pre_shared_key = bean.peerPreSharedKey;
   }
   if (bean.reserved) {
-    outbound.reserved = genWgReserved(bean.reserved);
+    peer.reserved = genWgReserved(bean.reserved);
   }
-  return outbound;
+
+  return {
+    tag: bean.displayName(),
+    type: 'wireguard',
+    address: listByLineOrComma(bean.localAddress),
+    private_key: bean.privateKey,
+    mtu: bean.mtu,
+    peers: [peer],
+  };
 }
 
 /**
@@ -2098,13 +2102,14 @@ function parseSingboxTuic(outbound) {
 function parseSingboxWireguard(outbound) {
   const bean = new WireGuardBean();
   bean.name = outbound.tag;
-  bean.serverAddress = outbound.server;
-  bean.serverPort = outbound.server_port;
-  bean.privateKey = outbound.private_key;
-  bean.peerPublicKey = outbound.peer_public_key;
-  bean.peerPreSharedKey = outbound.pre_shared_key || '';
-  bean.localAddress = (outbound.local_address || []).join(',');
-  bean.reserved = (outbound.reserved || '').toString();
+  const peer = outbound.peers?.[0];
+  bean.serverAddress = outbound.server || peer?.address || '';
+  bean.serverPort = outbound.server_port || peer?.port || 51820;
+  bean.privateKey = outbound.private_key || '';
+  bean.peerPublicKey = outbound.peer_public_key || peer?.public_key || '';
+  bean.peerPreSharedKey = outbound.pre_shared_key || peer?.pre_shared_key || '';
+  bean.localAddress = (outbound.local_address || outbound.address || []).join(',');
+  bean.reserved = (outbound.reserved || peer?.reserved || '').toString();
   bean.mtu = outbound.mtu || 1420;
   return bean;
 }
@@ -2498,6 +2503,8 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
 function insertProxies(template, proxies, policyFilter) {
   const config = JSON.parse(JSON.stringify(template));
   const baseOutbounds = Array.isArray(config.outbounds) ? config.outbounds : [];
+  const proxyOutbounds = proxies.filter(proxy => proxy.type !== 'wireguard');
+  const proxyEndpoints = proxies.filter(proxy => proxy.type === 'wireguard');
 
   const filterRules = policyFilter
     .split('@')
@@ -2539,7 +2546,10 @@ function insertProxies(template, proxies, policyFilter) {
     })
   })
 
-  config.outbounds = [...baseOutbounds, ...proxies];
+  config.outbounds = [...baseOutbounds, ...proxyOutbounds];
+  if (proxyEndpoints.length > 0 || Array.isArray(config.endpoints)) {
+    config.endpoints = [...(config.endpoints || []), ...proxyEndpoints];
+  }
   return config;
 }
 
@@ -2691,7 +2701,7 @@ async function run() {
     templateStr = JSON.parse(templateRaw);
   } else {
     sbtplLog('using default template');
-    templateStr = defaultTemplateStr;
+    templateStr = createTemplate('fakeip');
   }
 
   const confNew = setTemplateValue(templateStr, ctrlapi, mixport, logFilePath, isTunEnabled, isAndroid, isLinux, isIcmp, IsWindows, isIpv6);

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/sbtpl.svg)](https://www.npmjs.com/package/sbtpl)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-sing-box 配置生成器 — 将代理订阅链接转换为 sing-box 兼容的 JSON 配置。
+sing-box 1.14 配置生成器 — 将代理订阅链接转换为 sing-box 兼容的 JSON 配置。
 
 ## 功能特性
 
@@ -148,7 +148,13 @@ sbtpl server gen -o ./output
 
 ## 配置模板
 
-sbtpl 使用 JSON 模板生成配置。默认模板包含：
+sbtpl 使用 `substore/template.base.json` + `substore/template.js` 从公用配置生成三种 JSON 模板：
+
+- `template.json`：FakeIP DNS
+- `real-dns.json`：真实 DNS
+- `real-dns-nosniff.json`：真实 DNS，不添加 sniff/DNS 劫持规则
+
+修改公用配置或模式差异后，运行 `npm run generate:templates` 更新 JSON 产物。默认模板包含：
 - DNS 配置（fakeip）
 - 入站配置（mixed + 可选 TUN）
 - 路由规则（17 组基于 rule_set 的规则）
@@ -169,6 +175,8 @@ sbtpl 使用 JSON 模板生成配置。默认模板包含：
 - SSH
 - AnyTLS（sing-box >= 1.12）
 
+sing-box 1.14 兼容说明：远程 rule-set 使用共享 `http_clients`；WireGuard 节点写入顶层 `endpoints`；Hysteria v1 使用新的 QUIC 字段；服务端 Trojan ACME 使用顶层 certificate provider。
+
 ## 开发
 
 ### 项目结构
@@ -182,7 +190,9 @@ sbtpl/
 │   └── Justfile       # just 任务定义
 └── substore/          # Sub-Store 脚本
     ├── substore.js    # Sub-Store artifact 脚本
-    └── template.json  # sing-box 配置模板
+    ├── template.base.json # 公用模板源
+    ├── template.js    # 公用模板与模式生成器
+    └── *.json         # 供 CLI/Sub-Store 直接使用的生成模板
 ```
 
 ### 本地开发

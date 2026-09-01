@@ -1,13 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { createTemplate } from '../substore/template.js'
 
-const templatePaths = [
-  'substore/template.json',
-  'substore/real-dns.json',
+const templateModes = [
+  ['substore/template.json', 'fakeip'],
+  ['substore/real-dns.json', 'real-dns'],
+  ['substore/real-dns-nosniff.json', 'real-dns-nosniff'],
 ]
 
-for (const templatePath of templatePaths) {
+for (const [templatePath, mode] of templateModes) {
+  test(`${templatePath} is generated from the shared template`, async () => {
+    const config = JSON.parse(await readFile(templatePath, 'utf8'))
+    assert.deepEqual(config, createTemplate(mode))
+  })
+
   test(`${templatePath} keeps Steam services proxied and game downloads direct`, async () => {
     const config = JSON.parse(await readFile(templatePath, 'utf8'))
     const steamSelector = config.outbounds.find(outbound => outbound.tag === '🎮Steam')
@@ -35,5 +42,19 @@ for (const templatePath of templatePaths) {
       { rule_set: 'geosite-steam', outbound: '🎮Steam' },
       { rule_set: ['geosite-category-games', 'geosite-dmm'], outbound: '🎯Direct' },
     ])
+  })
+
+  test(`${templatePath} uses the sing-box 1.14 HTTP client migration`, async () => {
+    const config = JSON.parse(await readFile(templatePath, 'utf8'))
+
+    assert.deepEqual(config.http_clients, [
+      { tag: 'direct-http', detour: '🎯Direct' },
+    ])
+    assert.equal(config.route.default_http_client, 'direct-http')
+    assert.equal(Object.hasOwn(config.dns, 'independent_cache'), false)
+
+    for (const ruleSet of config.route.rule_set) {
+      assert.equal(Object.hasOwn(ruleSet, 'download_detour'), false)
+    }
   })
 }
