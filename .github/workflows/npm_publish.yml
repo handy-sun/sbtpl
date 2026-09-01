@@ -27,7 +27,18 @@ jobs:
             exit 1
           fi
 
+      - name: Normalize npm token
+        shell: bash
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TOKEN=$(printf '%s' "$NPM_TOKEN" | tr -d '[:space:]')
+          if [ -z "$TOKEN" ]; then
+            echo "::error::NPM_TOKEN is empty"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          printf 'NODE_AUTH_TOKEN=%s\n' "$TOKEN" >> "$GITHUB_ENV"
+
       - name: Publish to npm
         run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
