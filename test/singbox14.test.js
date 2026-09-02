@@ -93,4 +93,47 @@ test('Sub-Store moves legacy WireGuard outbounds to 1.14 endpoints', async () =>
   const config = JSON.parse(result.stdout.slice(result.stdout.lastIndexOf('RESULT:') + 7))
   assert.equal(config.outbounds.some(outbound => outbound.type === 'wireguard'), false)
   assert.equal(config.endpoints[0].peers[0].public_key, 'public-key')
+  assert.deepEqual(config.http_clients, [{ tag: 'direct-http', detour: '🎯Direct' }])
+  assert.equal(config.route.default_http_client, 'direct-http')
+})
+
+test('Sub-Store migrates legacy Hysteria v1 QUIC fields to 1.14 names', async () => {
+  const template = await readFile(path.join(projectRoot, 'substore/template.json'), 'utf8')
+  const scriptUrl = pathToFileURL(path.join(projectRoot, 'substore/substore.js')).href
+  const hysteria = {
+    type: 'hysteria',
+    tag: 'hysteria-test',
+    server: 'example.com',
+    server_port: 443,
+    disable_mtu_discovery: true,
+    recv_window_conn: '1 MiB',
+    recv_window: '2 MiB',
+  }
+  const source = `
+    globalThis.$arguments = ${JSON.stringify({
+      type: 'subscription',
+      name: 'test',
+      outbound: '@🌐Proxy',
+    })};
+    globalThis.$content = ${JSON.stringify(template)};
+    globalThis.$files = [];
+    globalThis.produceArtifact = async () => [${JSON.stringify(hysteria)}];
+    await import(${JSON.stringify(scriptUrl)});
+    process.stdout.write('RESULT:' + globalThis.$content);
+  `
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  const config = JSON.parse(result.stdout.slice(result.stdout.lastIndexOf('RESULT:') + 7))
+  const outbound = config.outbounds.find(item => item.tag === 'hysteria-test')
+
+  assert.equal(outbound.disable_path_mtu_discovery, true)
+  assert.equal(outbound.stream_receive_window, '1 MiB')
+  assert.equal(outbound.connection_receive_window, '2 MiB')
+  assert.equal(Object.hasOwn(outbound, 'disable_mtu_discovery'), false)
+  assert.equal(Object.hasOwn(outbound, 'recv_window_conn'), false)
+  assert.equal(Object.hasOwn(outbound, 'recv_window'), false)
 })

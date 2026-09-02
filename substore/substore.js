@@ -199,6 +199,10 @@ if (url) {
   })
 }
 
+// Sub-Store versions that still emit the legacy Hysteria v1 QUIC field names
+// need a small normalization before the nodes are appended to a 1.14 config.
+proxies = proxies.map(normalizeProxy)
+
 log(`⓷ outbound 规则解析`)
 const outboundRules = outbound
   .split('@')
@@ -259,7 +263,9 @@ function getTags(proxies, regex) {
   return (regex ? proxies.filter(p => regex.test(p.tag)) : proxies).map(p => p.tag)
 }
 function toWireGuardEndpoint(proxy) {
-  if (Array.isArray(proxy.peers)) return proxy
+  if (Array.isArray(proxy.peers) && !proxy.server && !proxy.peer_public_key) {
+    return proxy
+  }
 
   const peer = {
     address: proxy.server,
@@ -268,7 +274,7 @@ function toWireGuardEndpoint(proxy) {
     allowed_ips: ['0.0.0.0/0', '::/0'],
   }
   if (proxy.pre_shared_key) peer.pre_shared_key = proxy.pre_shared_key
-  if (proxy.reserved) peer.reserved = proxy.reserved
+  if (proxy.reserved) peer.reserved = normalizeReserved(proxy.reserved)
 
   return {
     type: 'wireguard',
@@ -280,6 +286,37 @@ function toWireGuardEndpoint(proxy) {
     private_key: proxy.private_key,
     peers: [peer],
   }
+}
+function normalizeProxy(proxy) {
+  if (!proxy || proxy.type !== 'hysteria') return proxy
+
+  const normalized = { ...proxy }
+  if (normalized.disable_path_mtu_discovery === undefined
+    && normalized.disable_mtu_discovery !== undefined) {
+    normalized.disable_path_mtu_discovery = normalized.disable_mtu_discovery
+  }
+  if (normalized.stream_receive_window === undefined
+    && normalized.recv_window_conn !== undefined) {
+    normalized.stream_receive_window = normalized.recv_window_conn
+  }
+  if (normalized.connection_receive_window === undefined
+    && normalized.recv_window !== undefined) {
+    normalized.connection_receive_window = normalized.recv_window
+  }
+
+  delete normalized.disable_mtu_discovery
+  delete normalized.recv_window_conn
+  delete normalized.recv_window
+  return normalized
+}
+function normalizeReserved(value) {
+  if (Array.isArray(value)) return value.map(Number)
+  if (typeof value !== 'string') return value
+
+  const trimmed = value.trim()
+  const numbers = trimmed.match(/^\[?\s*\d+\s*(?:,\s*\d+\s*){2}\]?$/)
+  if (numbers) return trimmed.replace(/[\[\]\s]/g, '').split(',').map(Number)
+  return value
 }
 function log(v) {
   console.log(`[sing-box 📦] ${v}`)
