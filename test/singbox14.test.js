@@ -93,7 +93,7 @@ test('Sub-Store moves legacy WireGuard outbounds to 1.14 endpoints', async () =>
   const config = JSON.parse(result.stdout.slice(result.stdout.lastIndexOf('RESULT:') + 7))
   assert.equal(config.outbounds.some(outbound => outbound.type === 'wireguard'), false)
   assert.equal(config.endpoints[0].peers[0].public_key, 'public-key')
-  assert.deepEqual(config.http_clients, [{ tag: 'direct-http', detour: '🎯Direct' }])
+  assert.deepEqual(config.http_clients, [{ tag: 'direct-http', domain_resolver: 'dns_direct' }])
   assert.equal(config.route.default_http_client, 'direct-http')
 })
 

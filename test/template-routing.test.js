@@ -48,7 +48,7 @@ for (const [templatePath, mode] of templateModes) {
     const config = JSON.parse(await readFile(templatePath, 'utf8'))
 
     assert.deepEqual(config.http_clients, [
-      { tag: 'direct-http', detour: '🎯Direct' },
+      { tag: 'direct-http', domain_resolver: 'dns_direct' },
     ])
     assert.equal(config.route.default_http_client, 'direct-http')
     assert.equal(Object.hasOwn(config.dns, 'independent_cache'), false)

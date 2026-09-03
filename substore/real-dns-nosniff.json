@@ -455,7 +455,7 @@
   "http_clients": [
     {
       "tag": "direct-http",
-      "detour": "🎯Direct"
+      "domain_resolver": "dns_direct"
     }
   ]
 }
