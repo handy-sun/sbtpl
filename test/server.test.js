@@ -133,7 +133,7 @@ test('server add persists custom tags and rejects duplicate tags', async (t) => 
   assert.match(duplicate.stdout + duplicate.stderr, /tag.*already exists/i)
 })
 
-test('server generation emits top-level ACME certificate providers for sing-box 1.14', async (t) => {
+test('server generation keeps inline ACME options for sing-box 1.12', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-acme-test-'))
   const metaPath = path.join(dir, 'meta.json')
   const outputDir = path.join(dir, 'output')
@@ -144,16 +144,12 @@ test('server generation emits top-level ACME certificate providers for sing-box 
   assert.equal(runServer('gen', '-o', outputDir, '--meta', metaPath).status, 0)
 
   const serverConfig = JSON.parse(await readFile(path.join(outputDir, 'server-config.json'), 'utf8'))
-  assert.deepEqual(serverConfig.certificate_providers, [{
-    type: 'acme',
-    tag: 'trojan-443-acme',
-    domain: ['example.com'],
-  }])
-  assert.equal(serverConfig.inbounds[0].tls.certificate_provider, 'trojan-443-acme')
+  assert.equal(Object.hasOwn(serverConfig, 'certificate_providers'), false)
+  assert.deepEqual(serverConfig.inbounds[0].tls.acme, { domain: ['example.com'] })
 
   const nixModule = await readFile(path.join(outputDir, 'sing-box-server.nix'), 'utf8')
-  assert.match(nixModule, /certificate_provider = "trojan-443-acme";/)
-  assert.match(nixModule, /certificate_providers = \[/)
+  assert.match(nixModule, /acme = \{\s+domain = \[ "example.com" \];/)
+  assert.doesNotMatch(nixModule, /certificate_provider/)
 })
 
 test('server generation escapes tag interpolation in the Nix module', async (t) => {
@@ -190,17 +186,14 @@ test('buildServerLog maps software settings to server log config', () => {
   })
 })
 
-test('Trojan buildServerInbound with acme mode uses a certificate provider', () => {
+test('Trojan buildServerInbound with acme mode uses acme field', () => {
   const entry = { port: 443, password: 'test', tlsMode: 'acme', domain: 'example.com' }
   const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound(entry)
   assert.equal(inbound.type, 'trojan')
   assert.deepEqual(inbound.tls, {
     enabled: true,
     server_name: 'example.com',
-    certificate_provider: {
-      type: 'acme',
-      domain: ['example.com'],
-    },
+    acme: { domain: ['example.com'] },
   })
 })
 

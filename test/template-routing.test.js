@@ -44,17 +44,15 @@ for (const [templatePath, mode] of templateModes) {
     ])
   })
 
-  test(`${templatePath} uses the sing-box 1.14 HTTP client migration`, async () => {
+  test(`${templatePath} downloads rule-sets with sing-box 1.12 fields`, async () => {
     const config = JSON.parse(await readFile(templatePath, 'utf8'))
 
-    assert.deepEqual(config.http_clients, [
-      { tag: 'direct-http', domain_resolver: 'dns_direct' },
-    ])
-    assert.equal(config.route.default_http_client, 'direct-http')
-    assert.equal(Object.hasOwn(config.dns, 'independent_cache'), false)
+    assert.equal(Object.hasOwn(config, 'http_clients'), false)
+    assert.equal(Object.hasOwn(config.route, 'default_http_client'), false)
+    assert.equal(config.dns.independent_cache, true)
 
     for (const ruleSet of config.route.rule_set) {
-      assert.equal(Object.hasOwn(ruleSet, 'download_detour'), false)
+      assert.equal(ruleSet.download_detour, '🎯Direct')
     }
   })
 }

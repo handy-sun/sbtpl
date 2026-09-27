@@ -115,12 +115,8 @@ if (tun) {
 }
 
 if (icmp) {
-  log(`⓵.⓸  icmp 透传: (sing-box version>=1.13.0)`)
-  config.route.rules.unshift({
-    "network": "icmp",
-    "outbound": icmp
-  })
-  log(`📝 头部插入了icmp直连, 当前route.rules[0]: ${JSON.stringify(config.route.rules[0])}`)
+  // network: icmp 需要 sing-box >= 1.13.0, 1.12 中该规则永远不会匹配
+  log(`⓵.⓸  ⚠️ sing-box 1.12 不支持 icmp 路由, 忽略 icmp 参数`)
 }
 
 if (ruleset) {
@@ -199,8 +195,8 @@ if (url) {
   })
 }
 
-// Sub-Store versions that still emit the legacy Hysteria v1 QUIC field names
-// need a small normalization before the nodes are appended to a 1.14 config.
+// Hysteria v1 nodes emitted with the 1.14 QUIC field names need to be
+// converted back to the legacy fields before appending to a 1.12 config.
 proxies = proxies.map(normalizeProxy)
 
 log(`⓷ outbound 规则解析`)
@@ -291,23 +287,36 @@ function normalizeProxy(proxy) {
   if (!proxy || proxy.type !== 'hysteria') return proxy
 
   const normalized = { ...proxy }
-  if (normalized.disable_path_mtu_discovery === undefined
-    && normalized.disable_mtu_discovery !== undefined) {
-    normalized.disable_path_mtu_discovery = normalized.disable_mtu_discovery
+  if (normalized.disable_mtu_discovery === undefined
+    && normalized.disable_path_mtu_discovery !== undefined) {
+    normalized.disable_mtu_discovery = normalized.disable_path_mtu_discovery
   }
-  if (normalized.stream_receive_window === undefined
-    && normalized.recv_window_conn !== undefined) {
-    normalized.stream_receive_window = normalized.recv_window_conn
+  if (normalized.recv_window_conn === undefined
+    && normalized.stream_receive_window !== undefined) {
+    normalized.recv_window_conn = normalized.stream_receive_window
   }
-  if (normalized.connection_receive_window === undefined
-    && normalized.recv_window !== undefined) {
-    normalized.connection_receive_window = normalized.recv_window
+  if (normalized.recv_window === undefined
+    && normalized.connection_receive_window !== undefined) {
+    normalized.recv_window = normalized.connection_receive_window
   }
 
-  delete normalized.disable_mtu_discovery
-  delete normalized.recv_window_conn
-  delete normalized.recv_window
+  delete normalized.disable_path_mtu_discovery
+  delete normalized.stream_receive_window
+  delete normalized.connection_receive_window
+  // sing-box 1.12 only accepts byte counts as integers for these fields
+  for (const key of ['recv_window_conn', 'recv_window']) {
+    if (normalized[key] !== undefined) normalized[key] = parseMemoryBytes(normalized[key])
+  }
   return normalized
+}
+function parseMemoryBytes(value) {
+  if (typeof value !== 'string') return value
+
+  // same units as sing byteformats.MemoryBytes: every prefix is 1024-based
+  const match = value.trim().match(/^(\d+)\s*([kmgt]?)(?:i?b)?$/i)
+  if (!match) return value
+  const power = ['', 'k', 'm', 'g', 't'].indexOf(match[2].toLowerCase())
+  return Number(match[1]) * 1024 ** power
 }
 function normalizeReserved(value) {
   if (Array.isArray(value)) return value.map(Number)

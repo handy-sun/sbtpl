@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/sbtpl.svg)](https://www.npmjs.com/package/sbtpl)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-sing-box 1.14 配置生成器 — 将代理订阅链接转换为 sing-box 兼容的 JSON 配置。
+sing-box 1.12 配置生成器 — 将代理订阅链接转换为 sing-box 兼容的 JSON 配置。
 
 ## 功能特性
 
@@ -52,7 +52,7 @@ sbtpl -s '<订阅链接>' -o config.json
 | `--linux` | | Linux TUN 模式 |
 | `--ipv6` | | 显式启用 TUN IPv6 地址（默认关闭） |
 | `--windows` | | Windows TUN 模式 |
-| `--icmp` | | ICMP 透传 |
+| `--icmp` | | ICMP 透传（需 sing-box >= 1.13，1.12 分支中忽略） |
 
 ### 示例
 
@@ -175,7 +175,7 @@ sbtpl 使用 `substore/template.base.json` + `substore/template.js` 从公用配
 - SSH
 - AnyTLS（sing-box >= 1.12）
 
-sing-box 1.14 兼容说明：远程 rule-set 使用共享 `http_clients`；WireGuard 节点写入顶层 `endpoints`；Hysteria v1 使用新的 QUIC 字段；服务端 Trojan ACME 使用顶层 certificate provider。
+sing-box 1.12 兼容说明（`sb-1.12` 分支）：远程 rule-set 使用 `download_detour`；DNS 开启 `independent_cache`；WireGuard 节点写入顶层 `endpoints`；Hysteria v1 使用 `recv_window_conn`/`recv_window`/`disable_mtu_discovery`；服务端 Trojan ACME 使用内联 `tls.acme`；不生成 1.13+ 的 `network: icmp` 规则。
 
 ## 开发
 

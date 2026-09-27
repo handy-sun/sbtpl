@@ -1636,7 +1636,7 @@ function buildSingboxHysteria(bean, options) {
       auth_str: bean.authPayloadType === 1 ? bean.authPayload : undefined,
       auth: bean.authPayloadType === 2 ? bean.authPayload : undefined,
       hop_interval: `${bean.hopInterval}s`,
-      disable_path_mtu_discovery: bean.disableMtuDiscovery,
+      disable_mtu_discovery: bean.disableMtuDiscovery,
       tls: tls,
     };
     if (isMultiPort(bean.serverPorts)) {
@@ -1645,10 +1645,10 @@ function buildSingboxHysteria(bean, options) {
       outbound.server_port = safeParseInt(bean.serverPorts);
     }
     if (bean.streamReceiveWindow > 0) {
-      outbound.stream_receive_window = `${bean.streamReceiveWindow} B`;
+      outbound.recv_window_conn = bean.streamReceiveWindow;
     }
     if (bean.connectionReceiveWindow > 0) {
-      outbound.connection_receive_window = `${bean.connectionReceiveWindow} B`;
+      outbound.recv_window = bean.connectionReceiveWindow;
     }
     return outbound;
   } else {
@@ -2467,12 +2467,8 @@ function setTemplateValue(temp, ctrlapi, mixport, logFilePath, isTunEnabled, isA
   }
 
   if (isIcmp) {
-    sbtplLog(`icmp 透传: (sing-box version>=1.13.0)`)
-    config.route.rules.unshift({
-      network: 'icmp',
-      outbound: '🎯Direct',
-    })
-    sbtplLog(`📝 头部插入了icmp直连, 当前route.rules[0]: ${JSON.stringify(config.route.rules[0])}`)
+    // network: icmp 需要 sing-box >= 1.13.0, 1.12 中该规则永远不会匹配
+    sbtplLog(`⚠️ sing-box 1.12 不支持 icmp 路由, 忽略 --icmp`)
   }
 
   if (isAndroid) {
