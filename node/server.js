@@ -20,6 +20,33 @@ const DEFAULT_SERVER_SETTINGS = {
 }
 const RESERVED_PROTOCOL_TAGS = new Set(['direct', 'proxy'])
 
+export const TROJAN_TLS_MODES = ['acme', 'self-signed', 'file']
+const NIXOS_ACME_DIR = '/var/lib/acme'
+
+// A "file" TLS mode entry points sing-box at certificates managed elsewhere,
+// for example by the NixOS security.acme module.
+export function getTrojanCertPaths(entry = {}) {
+  const dir = entry.domain ? path.posix.join(NIXOS_ACME_DIR, entry.domain) : ''
+  return {
+    certPath: entry.certPath || (dir ? `${dir}/fullchain.pem` : ''),
+    keyPath: entry.keyPath || (dir ? `${dir}/key.pem` : ''),
+  }
+}
+
+export function validateTrojanEntry(entry = {}) {
+  if (!TROJAN_TLS_MODES.includes(entry.tlsMode)) {
+    return `tls-mode must be one of ${TROJAN_TLS_MODES.join(', ')}`
+  }
+  if (entry.tlsMode === 'acme' && !entry.domain) {
+    return 'domain is required when tls-mode is acme'
+  }
+  if (entry.tlsMode === 'file') {
+    const { certPath, keyPath } = getTrojanCertPaths(entry)
+    if (!certPath || !keyPath) return 'domain or cert-path is required when tls-mode is file'
+  }
+  return null
+}
+
 export function buildServerInboundTag(protocol, port) {
   return `${protocol}-${port}`
 }
@@ -86,14 +113,26 @@ export const PROTOCOL_REGISTRY = {
     fields: [
       { name: 'port', type: 'number', default: 443, prompt: '端口' },
       { name: 'password', type: 'string', generate: () => generateRandomBase64(16), prompt: '密码' },
-      { name: 'tlsMode', type: 'string', default: 'acme', prompt: 'TLS 模式 (acme/self-signed)' },
+      { name: 'tlsMode', type: 'string', default: 'acme', prompt: 'TLS 模式 (acme/self-signed/file)' },
       { name: 'domain', type: 'string', prompt: '域名 (TLS server_name)' },
+      {
+        name: 'certPath', type: 'string', prompt: '证书路径 (留空=nixos acme 默认路径)',
+        when: entry => entry.tlsMode === 'file',
+      },
+      {
+        name: 'keyPath', type: 'string', prompt: '私钥路径 (留空=nixos acme 默认路径)',
+        when: entry => entry.tlsMode === 'file',
+      },
     ],
     buildServerInbound(entry, certificateProviderTag) {
       const tls = { enabled: true, server_name: entry.domain || '' }
       if (entry.tlsMode === 'self-signed') {
         tls.certificate_path = '/etc/sing-box/tls.cer'
         tls.key_path = '/etc/sing-box/tls.key'
+      } else if (entry.tlsMode === 'file') {
+        const { certPath, keyPath } = getTrojanCertPaths(entry)
+        tls.certificate_path = certPath
+        tls.key_path = keyPath
       } else {
         tls.certificate_provider = certificateProviderTag || {
           type: 'acme',
@@ -122,9 +161,10 @@ export const PROTOCOL_REGISTRY = {
       const parts = [`port=${entry.port}`]
       if (entry.domain) parts.push(`domain=${entry.domain}`)
       parts.push(`tls=${entry.tlsMode || 'acme'}`)
+      if (entry.tlsMode === 'file') parts.push(`cert=${getTrojanCertPaths(entry).certPath}`)
       return parts.join('  ')
     },
-    editableFields: ['port', 'password', 'domain', 'tlsMode'],
+    editableFields: ['port', 'password', 'domain', 'tlsMode', 'certPath', 'keyPath'],
   },
   ss: {
     label: 'SS 2022',
@@ -225,6 +265,8 @@ function parseServerArgs(argv) {
       'ip': { type: 'string' },
       'meta': { type: 'string' },
       'tls-mode': { type: 'string' },
+      'cert-path': { type: 'string' },
+      'key-path': { type: 'string' },
       'output-dir': { type: 'string', short: 'o' },
     },
     strict: false,
@@ -236,6 +278,12 @@ function parseServerArgs(argv) {
 
 function getMetaPath(values) {
   return values.meta || DEFAULT_META_PATH
+}
+
+// Field names are camelCase while flags are kebab-case: --tls-mode -> tlsMode.
+function readFlag(values, name) {
+  const kebab = name.replace(/[A-Z]/g, char => `-${char.toLowerCase()}`)
+  return values[name] ?? values[kebab]
 }
 
 export function getLocalIpFromInterfaces(interfaces = os.networkInterfaces()) {
@@ -330,8 +378,10 @@ async function serverAdd(protocol, values, metaPath) {
   // build entry from fields
   const entry = { type: protocol }
   for (const field of reg.fields) {
-    if (values[field.name] !== undefined) {
-      entry[field.name] = field.type === 'number' ? safeParseInt(values[field.name], field.default) : values[field.name]
+    if (field.when && !field.when(entry)) continue
+    const provided = readFlag(values, field.name)
+    if (provided !== undefined) {
+      entry[field.name] = field.type === 'number' ? safeParseInt(provided, field.default) : provided
     } else if (field.generate) {
       entry[field.name] = field.generate()
     } else if (field.default !== undefined) {
@@ -350,12 +400,9 @@ async function serverAdd(protocol, values, metaPath) {
 
   // protocol-specific validation
   if (protocol === 'trojan') {
-    if (entry.tlsMode !== 'acme' && entry.tlsMode !== 'self-signed') {
-      sbtplErr('--tls-mode must be acme or self-signed')
-      process.exit(1)
-    }
-    if (entry.tlsMode === 'acme' && !entry.domain) {
-      sbtplErr('--domain is required when tls-mode is acme')
+    const trojanProblem = validateTrojanEntry(entry)
+    if (trojanProblem) {
+      sbtplErr(trojanProblem)
       process.exit(1)
     }
   }
@@ -413,6 +460,15 @@ async function serverGen(metaPath, outputDir) {
   if (!meta.ip || !meta.protocols.length) {
     sbtplErr('no server IP or protocols configured')
     process.exit(1)
+  }
+
+  for (const entry of meta.protocols) {
+    if (entry.type !== 'trojan' || entry.tlsMode !== 'file') continue
+    const { certPath, keyPath } = getTrojanCertPaths(entry)
+    if (!certPath || !keyPath) {
+      sbtplErr(`trojan ${getProtocolTag(entry)}: certificate path is missing, set --domain or --cert-path/--key-path`)
+      process.exit(1)
+    }
   }
 
   const certificateProviders = meta.protocols
@@ -547,6 +603,17 @@ ${nixCertificateProviders}    };
       console.log(`\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`)
       console.log(`  sing-box generate tls-keypair tls -m 456`)
       console.log(`  产出 /etc/sing-box/tls.cer + /etc/sing-box/tls.key`)
+    } else if (entry.tlsMode === 'file') {
+      const { certPath, keyPath } = getTrojanCertPaths(entry)
+      const domain = entry.domain || '<domain>'
+      console.log(`\n${YELLOW}[提示]${RESET} Trojan file 模式: 证书由外部管理（如 NixOS security.acme）`)
+      console.log(`  证书 ${certPath}`)
+      console.log(`  私钥 ${keyPath}`)
+      console.log(`  sing-box 非 root 运行时，需让证书 ${DIM}(640 acme:acme)${RESET} 可读:`)
+      console.log(`    users.users.sing-box.extraGroups = [ "acme" ];`)
+      console.log(`  证书续期后重载:`)
+      console.log(`    security.acme.certs."${domain}".reloadServices = [ "sing-box.service" ];`)
+      console.log(`  ${DIM}443 已被 sing-box 占用，acme 只能用 HTTP-01 或 DNS-01 验证${RESET}`)
     }
   }
 
@@ -634,6 +701,7 @@ async function interactiveAdd(rl, meta) {
 
   const entry = { type: protocol }
   for (const field of reg.fields) {
+    if (field.when && !field.when(entry)) continue
     const defaultVal = field.generate ? '(自动生成)' : (field.default ?? '')
     const hint = defaultVal ? ` ${DIM}[${defaultVal}]${RESET}` : ''
     const answer = await ask(rl, `  ${field.prompt}${hint}: `)
@@ -650,12 +718,8 @@ async function interactiveAdd(rl, meta) {
 
   // protocol-specific validation
   if (protocol === 'trojan') {
-    if (entry.tlsMode !== 'acme' && entry.tlsMode !== 'self-signed') {
-      return renderStatus('TLS 模式必须是 acme 或 self-signed', 'err')
-    }
-    if (entry.tlsMode === 'acme' && !entry.domain) {
-      return renderStatus('acme 模式下域名不能为空', 'err')
-    }
+    const trojanProblem = validateTrojanEntry(entry)
+    if (trojanProblem) return renderStatus(trojanProblem, 'err')
   }
 
   const defaultTag = getProtocolTag(entry)
@@ -713,7 +777,15 @@ async function interactiveModify(rl, meta) {
     }
   } else {
     const fieldDef = reg.fields.find(f => f.name === fieldName)
+    const previous = entry[fieldName]
     entry[fieldName] = fieldDef?.type === 'number' ? safeParseInt(answer.trim(), currentVal) : answer.trim()
+    if (entry.type === 'trojan') {
+      const trojanProblem = validateTrojanEntry(entry)
+      if (trojanProblem) {
+        entry[fieldName] = previous
+        return renderStatus(trojanProblem, 'err')
+      }
+    }
   }
   const link = getShareLink(entry, meta.ip)
   return renderStatus(`已更新 ${fieldName} = ${entry[fieldName]}`) + `\n\n  ${link}`
@@ -893,7 +965,7 @@ export async function serverDispatch(argv) {
   switch (args.command) {
     case 'add':
       if (!args.protocol) {
-        sbtplErr('usage: sbtpl server add <protocol> [--tag ...] [--port ...] [--domain ...]')
+        sbtplErr('usage: sbtpl server add <protocol> [--tag ...] [--port ...] [--domain ...] [--tls-mode ...]')
         process.exit(1)
       }
       await serverAdd(args.protocol, args.values, metaPath)

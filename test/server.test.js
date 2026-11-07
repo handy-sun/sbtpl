@@ -9,9 +9,11 @@ import {
   buildServerInboundTag,
   buildServerLog,
   getLocalIpFromInterfaces,
+  getTrojanCertPaths,
   normalizeMeta,
   resolveServerIpInput,
   validateProtocolTag,
+  validateTrojanEntry,
   PROTOCOL_REGISTRY,
 } from '../node/server.js'
 
@@ -233,4 +235,103 @@ test('Trojan metaToBean sets allowInsecure for self-signed mode', () => {
   const entryAcme = { port: 443, password: 'test', tlsMode: 'acme', domain: 'example.com' }
   const bean2 = PROTOCOL_REGISTRY.trojan.metaToBean(entryAcme, '1.2.3.4')
   assert.equal(bean2.allowInsecure, false)
+})
+
+test('getTrojanCertPaths derives nixos acme paths from the domain', () => {
+  assert.deepEqual(getTrojanCertPaths({ domain: 'example.com', tlsMode: 'file' }), {
+    certPath: '/var/lib/acme/example.com/fullchain.pem',
+    keyPath: '/var/lib/acme/example.com/key.pem',
+  })
+})
+
+test('getTrojanCertPaths prefers explicit paths and falls back to empty', () => {
+  assert.deepEqual(
+    getTrojanCertPaths({ domain: 'example.com', certPath: '/srv/full.pem', keyPath: '/srv/key.pem' }),
+    { certPath: '/srv/full.pem', keyPath: '/srv/key.pem' },
+  )
+  assert.deepEqual(getTrojanCertPaths({ tlsMode: 'file' }), { certPath: '', keyPath: '' })
+})
+
+test('validateTrojanEntry accepts the supported TLS modes', () => {
+  assert.equal(validateTrojanEntry({ tlsMode: 'acme', domain: 'example.com' }), null)
+  assert.equal(validateTrojanEntry({ tlsMode: 'self-signed' }), null)
+  assert.equal(validateTrojanEntry({ tlsMode: 'file', domain: 'example.com' }), null)
+  assert.equal(validateTrojanEntry({ tlsMode: 'file', certPath: '/a.pem', keyPath: '/b.key' }), null)
+
+  assert.match(validateTrojanEntry({ tlsMode: 'bogus' }), /must be one of/i)
+  assert.match(validateTrojanEntry({ tlsMode: 'acme' }), /domain is required/i)
+  assert.match(validateTrojanEntry({ tlsMode: 'file' }), /domain or cert-path is required/i)
+})
+
+test('Trojan buildServerInbound with file mode points at the external certificate', () => {
+  const inbound = PROTOCOL_REGISTRY.trojan.buildServerInbound({
+    tag: 'edge-trojan', port: 443, password: 'test', tlsMode: 'file', domain: 'example.com',
+  })
+  assert.deepEqual(inbound.tls, {
+    enabled: true,
+    server_name: 'example.com',
+    certificate_path: '/var/lib/acme/example.com/fullchain.pem',
+    key_path: '/var/lib/acme/example.com/key.pem',
+  })
+})
+
+test('Trojan file mode keeps client certificate verification enabled', () => {
+  const bean = PROTOCOL_REGISTRY.trojan.metaToBean(
+    { tag: 'edge-trojan', port: 443, password: 'test', tlsMode: 'file', domain: 'example.com' },
+    '203.0.113.10',
+  )
+  assert.equal(bean.allowInsecure, false)
+})
+
+test('server add honours --tls-mode and emits file-mode certificates', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-file-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  const outputDir = path.join(dir, 'output')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer('add', 'trojan', '--tls-mode', 'file', '--domain', 'example.com', '--password', 'test', '--meta', metaPath)
+  assert.equal(added.status, 0, added.stderr)
+  assert.equal(JSON.parse(await readFile(metaPath, 'utf8')).protocols[0].tlsMode, 'file')
+
+  assert.equal(runServer('gen', '-o', outputDir, '--meta', metaPath).status, 0)
+
+  const serverConfig = JSON.parse(await readFile(path.join(outputDir, 'server-config.json'), 'utf8'))
+  assert.equal(serverConfig.certificate_providers, undefined)
+  assert.deepEqual(serverConfig.inbounds[0].tls, {
+    enabled: true,
+    server_name: 'example.com',
+    certificate_path: '/var/lib/acme/example.com/fullchain.pem',
+    key_path: '/var/lib/acme/example.com/key.pem',
+  })
+
+  const clientConfig = JSON.parse(await readFile(path.join(outputDir, 'client-config.json'), 'utf8'))
+  const outbound = clientConfig.outbounds.find(item => item.tag === 'trojan-443')
+  assert.equal(outbound.tls.insecure, false)
+
+  const nixModule = await readFile(path.join(outputDir, 'sing-box-server.nix'), 'utf8')
+  assert.match(nixModule, /certificate_path = "\/var\/lib\/acme\/example.com\/fullchain.pem";/)
+  assert.doesNotMatch(nixModule, /certificate_providers/)
+})
+
+test('server add keeps the self-signed tls mode from the command line', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-selfsigned-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer('add', 'trojan', '--tls-mode', 'self-signed', '--domain', 'example.com', '--meta', metaPath)
+  assert.equal(added.status, 0, added.stderr)
+  assert.equal(JSON.parse(await readFile(metaPath, 'utf8')).protocols[0].tlsMode, 'self-signed')
+})
+
+test('server add rejects file mode without a domain or certificate path', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-file-invalid-'))
+  const metaPath = path.join(dir, 'meta.json')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer('add', 'trojan', '--tls-mode', 'file', '--password', 'test', '--meta', metaPath)
+  assert.notEqual(added.status, 0)
+  assert.match(added.stdout + added.stderr, /domain or cert-path is required/i)
 })

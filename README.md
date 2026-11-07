@@ -111,6 +111,7 @@ sbtpl server set --ip 1.2.3.4
 sbtpl server add vmess
 sbtpl server add vmess --tag edge-vmess
 sbtpl server add trojan --domain yourdomain.com
+sbtpl server add trojan --tls-mode file --domain yourdomain.com   # 用 NixOS security.acme 的证书
 sbtpl server add ss --port 8388
 
 # 查看配置
@@ -132,6 +133,31 @@ sbtpl server gen -o ./output
 | `gen [-o <dir>]` | 生成服务端/客户端配置文件及 NixOS 模块 |
 
 已有元数据会在下一次保存时补充默认 tag。
+
+#### Trojan TLS 模式
+
+| `--tls-mode` | 证书来源 |
+|------|------|
+| `acme`（默认） | sing-box 内置 ACME，启动时自动申请，使用顶层 `certificate_providers` |
+| `self-signed` | 手动生成，固定读 `/etc/sing-box/tls.cer` + `/etc/sing-box/tls.key`，客户端会关闭证书校验 |
+| `file` | 读取外部管理的证书，默认 `/var/lib/acme/<domain>/fullchain.pem` + `key.pem`，可用 `--cert-path` / `--key-path` 覆盖 |
+
+`file` 模式配合 NixOS `security.acme`（证书由 systemd 定时续期，sing-box 不再自己申请）：
+
+```nix
+security.acme = {
+  acceptTerms = true;
+  defaults.email = "you@example.com";
+  # 443 已被 sing-box 占用，只能用 HTTP-01 或 DNS-01 验证
+  certs."example.com".listenHTTP = ":80";
+  certs."example.com".reloadServices = [ "sing-box.service" ];
+};
+
+# 证书是 640 acme:acme；sing-box 以非 root 运行时才需要这一行
+users.users.sing-box.extraGroups = [ "acme" ];
+```
+
+Trojan 走 TLS over TCP：`listen` 只开 TCP 端口，UDP 流量（QUIC/DNS 等）由 Trojan 协议封装在 TLS 连接里转发，因此防火墙只需放行 `tcp/443`。
 
 ## 策略过滤格式
 
