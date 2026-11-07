@@ -443,3 +443,21 @@ test('server generation resolves @file DNS options into JSON and keeps _secret i
   assert.match(nixModule, new RegExp(`api_token = \\{ _secret = "${tokenPath}"; \\};`))
   assert.doesNotMatch(nixModule, /token-value/)
 })
+
+test('file mode emits the sing-box group membership for the certificate owner', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-group-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  const outputDir = path.join(dir, 'output')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer(
+    'add', 'trojan', '--tls-mode', 'file', '--domain', 'tr.647792.xyz', '--acme-group', 'nginx', '--password', 'test',
+    '--meta', metaPath,
+  )
+  assert.equal(added.status, 0, added.stderr)
+  assert.equal(runServer('gen', '-o', outputDir, '--meta', metaPath).status, 0)
+
+  const nixModule = await readFile(path.join(outputDir, 'sing-box-server.nix'), 'utf8')
+  assert.match(nixModule, /users\.users\.sing-box\.extraGroups = \[ "nginx" \];/)
+})

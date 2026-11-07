@@ -191,6 +191,10 @@ export const PROTOCOL_REGISTRY = {
         name: 'keyPath', type: 'string', prompt: '私钥路径 (留空=nixos acme 默认路径)',
         when: entry => entry.tlsMode === 'file',
       },
+      {
+        name: 'acmeGroup', type: 'string', default: 'acme', prompt: '证书所属组 (写入 extraGroups)',
+        when: entry => entry.tlsMode === 'file',
+      },
     ],
     buildServerInbound(entry, certificateProviderTag) {
       const tls = { enabled: true, server_name: entry.domain || '' }
@@ -236,7 +240,7 @@ export const PROTOCOL_REGISTRY = {
       }
       return parts.join('  ')
     },
-    editableFields: ['port', 'password', 'domain', 'tlsMode', 'certPath', 'keyPath', 'acmeDomains', 'acmeEmail', 'acmeCa', 'dnsProvider'],
+    editableFields: ['port', 'password', 'domain', 'tlsMode', 'certPath', 'keyPath', 'acmeGroup', 'acmeDomains', 'acmeEmail', 'acmeCa', 'dnsProvider'],
   },
   ss: {
     label: 'SS 2022',
@@ -340,6 +344,7 @@ function parseServerArgs(argv) {
       'cert-path': { type: 'string' },
       'key-path': { type: 'string' },
       'acme-domain': { type: 'string' },
+      'acme-group': { type: 'string' },
       'acme-email': { type: 'string' },
       'acme-ca': { type: 'string' },
       'dns-provider': { type: 'string' },
@@ -563,6 +568,13 @@ async function serverSet(values, metaPath) {
   await saveMeta(meta, metaPath)
 }
 
+// File-mode entries read certificates owned by another account (security.acme),
+// so the generated module has to grant the group membership explicitly.
+function getFileCertGroup(meta) {
+  const entry = meta.protocols.find(item => item.type === 'trojan' && item.tlsMode === 'file')
+  return entry ? (entry.acmeGroup || 'acme') : ''
+}
+
 async function resolveProviderSecrets(providers) {
   const resolved = []
   for (const provider of providers) {
@@ -683,6 +695,9 @@ ${certificateProviders.map(provider => `        ${nixValue(provider, 8)}`).join(
 `
     : ''
 
+  const certGroup = getFileCertGroup(meta)
+  const nixExtraUsers = certGroup ? `\n  users.users.sing-box.extraGroups = [ ${nixString(certGroup)} ];\n` : ''
+
   const nixModule = `{ config, pkgs, ... }:
 {
   services.sing-box = {
@@ -702,7 +717,7 @@ ${nixInbounds}
       ];
 ${nixCertificateProviders}    };
   };
-}
+${nixExtraUsers}}
 `
 
   // write files
@@ -737,8 +752,10 @@ ${nixCertificateProviders}    };
       console.log(`\n${YELLOW}[提示]${RESET} Trojan file 模式: 证书由外部管理（如 NixOS security.acme）`)
       console.log(`  证书 ${certPath}`)
       console.log(`  私钥 ${keyPath}`)
-      console.log(`  sing-box 非 root 运行时，需让证书 ${DIM}(640 acme:acme)${RESET} 可读:`)
-      console.log(`    users.users.sing-box.extraGroups = [ "acme" ];`)
+      const group = entry.acmeGroup || 'acme'
+      console.log(`  sing-box 非 root 运行时需读证书，生成的模块已写入:`)
+      console.log(`    users.users.sing-box.extraGroups = [ "${group}" ];`)
+      console.log(`  ${DIM}证书实际属组不是 ${group} 时用 --acme-group 改（如 nginx）${RESET}`)
       console.log(`  证书续期后重载:`)
       console.log(`    security.acme.certs."${domain}".reloadServices = [ "sing-box.service" ];`)
       console.log(`  ${DIM}443 已被 sing-box 占用，acme 只能用 HTTP-01 或 DNS-01 验证${RESET}`)

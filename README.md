@@ -140,7 +140,7 @@ sbtpl server gen -o ./output
 |------|------|
 | `acme`（默认） | sing-box 内置 ACME，启动时自动申请，使用顶层 `certificate_providers` |
 | `self-signed` | 手动生成，固定读 `/etc/sing-box/tls.cer` + `/etc/sing-box/tls.key`，客户端会关闭证书校验 |
-| `file` | 读取外部管理的证书，默认 `/var/lib/acme/<domain>/fullchain.pem` + `key.pem`，可用 `--cert-path` / `--key-path` 覆盖 |
+| `file` | 读取外部管理的证书，默认 `/var/lib/acme/<domain>/fullchain.pem` + `key.pem`，可用 `--cert-path` / `--key-path` 覆盖；证书属组用 `--acme-group` 指定（默认 `acme`），会写进生成的 `users.users.sing-box.extraGroups` |
 
 `file` 模式配合 NixOS `security.acme`（证书由 systemd 定时续期，sing-box 不再自己申请）：
 
@@ -148,13 +148,16 @@ sbtpl server gen -o ./output
 security.acme = {
   acceptTerms = true;
   defaults.email = "you@example.com";
-  # 443 已被 sing-box 占用，只能用 HTTP-01 或 DNS-01 验证
-  certs."example.com".listenHTTP = ":80";
-  certs."example.com".reloadServices = [ "sing-box.service" ];
+  certs."example.com" = {
+    group = "nginx";          # 证书属组，写 --acme-group nginx
+    dnsProvider = "cloudflare";
+    extraDomainNames = [ "*.example.com" ];
+    reloadServices = [ "sing-box.service" ];
+  };
 };
 
-# 证书是 640 acme:acme；sing-box 以非 root 运行时才需要这一行
-users.users.sing-box.extraGroups = [ "acme" ];
+# sing-box 以非 root 运行时需要读 640 的证书；gen 会按 --acme-group 自动写入这一行
+users.users.sing-box.extraGroups = [ "nginx" ];
 ```
 
 
