@@ -1,15 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 import {
+  buildAcmeProvider,
   buildServerInboundTag,
   buildServerLog,
   getLocalIpFromInterfaces,
   getTrojanCertPaths,
+  parseDnsOptions,
   normalizeMeta,
   resolveServerIpInput,
   validateProtocolTag,
@@ -334,4 +336,110 @@ test('server add rejects file mode without a domain or certificate path', async 
   const added = runServer('add', 'trojan', '--tls-mode', 'file', '--password', 'test', '--meta', metaPath)
   assert.notEqual(added.status, 0)
   assert.match(added.stdout + added.stderr, /domain or cert-path is required/i)
+})
+
+test('buildAcmeProvider defaults to the SNI domain without a DNS challenge', () => {
+  assert.deepEqual(
+    buildAcmeProvider({ tag: 'trojan-443', domain: 'example.com', tlsMode: 'acme' }),
+    { type: 'acme', tag: 'trojan-443-acme', domain: ['example.com'] },
+  )
+})
+
+test('buildAcmeProvider emits dns01_challenge with wildcard domains', () => {
+  const provider = buildAcmeProvider({
+    tag: 'trojan-443',
+    domain: 'vpn.647792.xyz',
+    tlsMode: 'acme',
+    acmeDomains: '*.647792.xyz, 647792.xyz',
+    acmeEmail: 'me@example.com',
+    acmeCa: 'zerossl',
+    dnsProvider: 'cloudflare',
+    dnsOptions: { api_token: '@/run/secrets/cf', zone_token: 'zone' },
+  })
+
+  assert.deepEqual(provider, {
+    type: 'acme',
+    tag: 'trojan-443-acme',
+    domain: ['*.647792.xyz', '647792.xyz'],
+    email: 'me@example.com',
+    provider: 'zerossl',
+    dns01_challenge: {
+      provider: 'cloudflare',
+      api_token: '@/run/secrets/cf',
+      zone_token: 'zone',
+    },
+  })
+})
+
+test('parseDnsOptions accepts key=value lists and objects', () => {
+  assert.deepEqual(parseDnsOptions('api_token=abc,zone_token=x=y'), {
+    api_token: 'abc',
+    zone_token: 'x=y',
+  })
+  assert.deepEqual(parseDnsOptions(['access_key_id=a', 'access_key_secret=b']), {
+    access_key_id: 'a',
+    access_key_secret: 'b',
+  })
+  assert.deepEqual(parseDnsOptions({ api_token: 'abc' }), { api_token: 'abc' })
+  assert.throws(() => parseDnsOptions('broken'), /key=value/i)
+})
+
+test('validateTrojanEntry requires DNS-01 for wildcards and known providers', () => {
+  assert.equal(validateTrojanEntry({ tlsMode: 'acme', domain: 'vpn.example.com' }), null)
+  assert.equal(
+    validateTrojanEntry({
+      tlsMode: 'acme', domain: 'vpn.example.com', acmeDomains: '*.example.com',
+      dnsProvider: 'cloudflare', dnsOptions: { api_token: 'x' },
+    }),
+    null,
+  )
+
+  assert.match(
+    validateTrojanEntry({ tlsMode: 'acme', domain: 'vpn.example.com', acmeDomains: '*.example.com' }),
+    /wildcard domain requires dns-provider/i,
+  )
+  assert.match(
+    validateTrojanEntry({ tlsMode: 'acme', domain: 'vpn.example.com', dnsProvider: 'route53', dnsOptions: { a: 'b' } }),
+    /dns-provider must be one of/i,
+  )
+  assert.match(
+    validateTrojanEntry({ tlsMode: 'acme', domain: 'vpn.example.com', dnsProvider: 'cloudflare' }),
+    /dns-option is required/i,
+  )
+})
+
+test('server generation resolves @file DNS options into JSON and keeps _secret in Nix', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'sbtpl-server-dns01-test-'))
+  const metaPath = path.join(dir, 'meta.json')
+  const outputDir = path.join(dir, 'output')
+  const tokenPath = path.join(dir, 'cf-token')
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  await writeFile(tokenPath, 'token-value\n')
+
+  assert.equal(runServer('set', '--ip', '203.0.113.10', '--meta', metaPath).status, 0)
+  const added = runServer(
+    'add', 'trojan',
+    '--domain', 'vpn.647792.xyz',
+    '--acme-domain', '*.647792.xyz,647792.xyz',
+    '--dns-provider', 'cloudflare',
+    '--dns-option', `api_token=@${tokenPath}`,
+    '--password', 'test',
+    '--meta', metaPath,
+  )
+  assert.equal(added.status, 0, added.stderr)
+
+  assert.equal(runServer('gen', '-o', outputDir, '--meta', metaPath).status, 0)
+
+  const serverConfig = JSON.parse(await readFile(path.join(outputDir, 'server-config.json'), 'utf8'))
+  assert.deepEqual(serverConfig.certificate_providers, [{
+    type: 'acme',
+    tag: 'trojan-443-acme',
+    domain: ['*.647792.xyz', '647792.xyz'],
+    dns01_challenge: { provider: 'cloudflare', api_token: 'token-value' },
+  }])
+
+  const nixModule = await readFile(path.join(outputDir, 'sing-box-server.nix'), 'utf8')
+  assert.match(nixModule, /dns01_challenge = \{/)
+  assert.match(nixModule, new RegExp(`api_token = \\{ _secret = "${tokenPath}"; \\};`))
+  assert.doesNotMatch(nixModule, /token-value/)
 })

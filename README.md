@@ -157,6 +157,39 @@ security.acme = {
 users.users.sing-box.extraGroups = [ "acme" ];
 ```
 
+
+DNS-01（泛域名证书，不依赖 NixOS acme）：
+
+```bash
+sbtpl server add trojan \
+  --domain vpn.647792.xyz \
+  --acme-domain '*.647792.xyz,647792.xyz' \
+  --acme-email you@example.com \
+  --dns-provider cloudflare \
+  --dns-option api_token=@/run/secrets/cf-token
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--acme-domain` | 证书里要签的名字，逗号分隔，支持 `*.x.y`；留空默认取 `--domain` |
+| `--acme-email` | ACME 账户邮箱 |
+| `--acme-ca` | `letsencrypt`（默认）/ `zerossl` / 自定义 CA 的 URL |
+| `--dns-provider` | `cloudflare` / `alidns` / `acmedns`；配置后强制走 DNS-01，不再需要 80 端口 |
+| `--dns-option` | 可重复的 `k=v`，值以 `@` 开头表示从文件读取 |
+
+各提供商的 `--dns-option` 字段：
+
+- `cloudflare`：`api_token`（必填）、`zone_token`（可选）
+- `alidns`：`access_key_id`、`access_key_secret`、`region_id`、`security_token`
+- `acmedns`：`username`、`password`、`subdomain`、`server_url`
+
+`--dns-option api_token=@/path` 的处理方式：
+
+- `server-config.json`：生成时读取文件内容内联，因此 `gen` 必须能读到该文件
+- `sing-box-server.nix`：写成 `{ _secret = "/path"; }`，由 `services.sing-box` 在启动前注入，token 不进 Nix store
+
+`*.x.y` 这类泛域名只能走 DNS-01；只写 `--acme-domain '*.x.y'` 而不配 `--dns-provider` 会被直接拒绝。
+
 Trojan 走 TLS over TCP：`listen` 只开 TCP 端口，UDP 流量（QUIC/DNS 等）由 Trojan 协议封装在 TLS 连接里转发，因此防火墙只需放行 `tcp/443`。
 
 ## 策略过滤格式

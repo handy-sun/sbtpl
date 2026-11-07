@@ -21,6 +21,7 @@ const DEFAULT_SERVER_SETTINGS = {
 const RESERVED_PROTOCOL_TAGS = new Set(['direct', 'proxy'])
 
 export const TROJAN_TLS_MODES = ['acme', 'self-signed', 'file']
+export const DNS01_PROVIDERS = ['cloudflare', 'alidns', 'acmedns']
 const NIXOS_ACME_DIR = '/var/lib/acme'
 
 // A "file" TLS mode entry points sing-box at certificates managed elsewhere,
@@ -33,12 +34,79 @@ export function getTrojanCertPaths(entry = {}) {
   }
 }
 
+export function splitDomains(value) {
+  if (Array.isArray(value)) return value.flatMap(splitDomains)
+  if (typeof value !== 'string') return []
+  return value.split(',').map(item => item.trim()).filter(Boolean)
+}
+
+// acmeDomains defaults to the SNI domain; wildcards belong here, not in domain.
+export function getAcmeDomains(entry = {}) {
+  const domains = splitDomains(entry.acmeDomains)
+  if (domains.length) return domains
+  return entry.domain ? [entry.domain] : []
+}
+
+export function parseDnsOptions(input) {
+  if (input && typeof input === 'object' && !Array.isArray(input)) return { ...input }
+  const items = Array.isArray(input) ? input : String(input ?? '').split(/[,;]/)
+  const options = {}
+  for (const raw of items) {
+    const item = String(raw).trim()
+    if (!item) continue
+    const separator = item.indexOf('=')
+    if (separator <= 0) throw new Error(`dns option must be key=value, got ${JSON.stringify(item)}`)
+    options[item.slice(0, separator).trim()] = item.slice(separator + 1).trim()
+  }
+  return options
+}
+
+function coerceDnsOptions(value) {
+  try {
+    return parseDnsOptions(value)
+  } catch {
+    return {}
+  }
+}
+
+// Builds one top-level certificate provider. Option values written as "@/path"
+// are secret files: they are inlined for JSON and kept as _secret in the Nix module.
+export function buildAcmeProvider(entry = {}) {
+  const provider = {
+    type: 'acme',
+    tag: `${getProtocolTag(entry)}-acme`,
+    domain: getAcmeDomains(entry),
+  }
+  if (entry.acmeEmail) provider.email = entry.acmeEmail
+  if (entry.acmeCa) provider.provider = entry.acmeCa
+  if (entry.dnsProvider) {
+    provider.dns01_challenge = { provider: entry.dnsProvider, ...coerceDnsOptions(entry.dnsOptions) }
+  }
+  return provider
+}
+
 export function validateTrojanEntry(entry = {}) {
   if (!TROJAN_TLS_MODES.includes(entry.tlsMode)) {
     return `tls-mode must be one of ${TROJAN_TLS_MODES.join(', ')}`
   }
-  if (entry.tlsMode === 'acme' && !entry.domain) {
-    return 'domain is required when tls-mode is acme'
+  if (entry.tlsMode === 'acme') {
+    const domains = getAcmeDomains(entry)
+    if (!domains.length) return 'domain is required when tls-mode is acme'
+    if (entry.dnsProvider && !DNS01_PROVIDERS.includes(entry.dnsProvider)) {
+      return `dns-provider must be one of ${DNS01_PROVIDERS.join(', ')}`
+    }
+    if (domains.some(domain => domain.startsWith('*.')) && !entry.dnsProvider) {
+      return 'wildcard domain requires dns-provider (DNS-01 challenge)'
+    }
+    if (entry.dnsProvider) {
+      let options
+      try {
+        options = parseDnsOptions(entry.dnsOptions ?? '')
+      } catch (error) {
+        return error.message
+      }
+      if (!Object.keys(options).length) return 'dns-option is required when dns-provider is set'
+    }
   }
   if (entry.tlsMode === 'file') {
     const { certPath, keyPath } = getTrojanCertPaths(entry)
@@ -162,9 +230,13 @@ export const PROTOCOL_REGISTRY = {
       if (entry.domain) parts.push(`domain=${entry.domain}`)
       parts.push(`tls=${entry.tlsMode || 'acme'}`)
       if (entry.tlsMode === 'file') parts.push(`cert=${getTrojanCertPaths(entry).certPath}`)
+      if ((entry.tlsMode || 'acme') === 'acme') {
+        if (entry.dnsProvider) parts.push(`dns01=${entry.dnsProvider}`)
+        if (splitDomains(entry.acmeDomains).length) parts.push(`acme=${splitDomains(entry.acmeDomains).join(',')}`)
+      }
       return parts.join('  ')
     },
-    editableFields: ['port', 'password', 'domain', 'tlsMode', 'certPath', 'keyPath'],
+    editableFields: ['port', 'password', 'domain', 'tlsMode', 'certPath', 'keyPath', 'acmeDomains', 'acmeEmail', 'acmeCa', 'dnsProvider'],
   },
   ss: {
     label: 'SS 2022',
@@ -267,6 +339,11 @@ function parseServerArgs(argv) {
       'tls-mode': { type: 'string' },
       'cert-path': { type: 'string' },
       'key-path': { type: 'string' },
+      'acme-domain': { type: 'string' },
+      'acme-email': { type: 'string' },
+      'acme-ca': { type: 'string' },
+      'dns-provider': { type: 'string' },
+      'dns-option': { type: 'string', multiple: true },
       'output-dir': { type: 'string', short: 'o' },
     },
     strict: false,
@@ -284,6 +361,15 @@ function getMetaPath(values) {
 function readFlag(values, name) {
   const kebab = name.replace(/[A-Z]/g, char => `-${char.toLowerCase()}`)
   return values[name] ?? values[kebab]
+}
+
+function applyAcmeFlags(entry, values) {
+  if (entry.type !== 'trojan') return
+  if (values['acme-domain'] !== undefined) entry.acmeDomains = values['acme-domain']
+  if (values['acme-email'] !== undefined) entry.acmeEmail = values['acme-email']
+  if (values['acme-ca'] !== undefined) entry.acmeCa = values['acme-ca']
+  if (values['dns-provider'] !== undefined) entry.dnsProvider = values['dns-provider']
+  if (values['dns-option'] !== undefined) entry.dnsOptions = parseDnsOptions(values['dns-option'])
 }
 
 export function getLocalIpFromInterfaces(interfaces = os.networkInterfaces()) {
@@ -355,6 +441,27 @@ function nixString(value) {
   return JSON.stringify(value).replaceAll('${', '\\${')
 }
 
+// Renders plain objects/arrays as a Nix expression. "@path" option values become
+// "{ _secret = ...; }", which services.sing-box inlines at unit start.
+function nixValue(value, indent = 0) {
+  const pad = ' '.repeat(indent)
+  const inner = ' '.repeat(indent + 2)
+  if (typeof value === 'string') {
+    return value.startsWith('@') ? `{ _secret = ${nixString(value.slice(1))}; }` : nixString(value)
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    if (!value.length) return '[ ]'
+    return `[\n${value.map(item => `${inner}${nixValue(item, indent + 2)}`).join('\n')}\n${pad}]`
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value)
+    if (!entries.length) return '{ }'
+    return `{\n${entries.map(([key, item]) => `${inner}${key} = ${nixValue(item, indent + 2)};`).join('\n')}\n${pad}}`
+  }
+  return 'null'
+}
+
 async function serverAdd(protocol, values, metaPath) {
   const reg = PROTOCOL_REGISTRY[protocol]
   if (!reg) {
@@ -393,6 +500,7 @@ async function serverAdd(protocol, values, metaPath) {
   }
   try {
     entry.tag = validateProtocolTag(values.tag ?? getProtocolTag(entry), meta.protocols)
+    applyAcmeFlags(entry, values)
   } catch (error) {
     sbtplErr(error.message)
     process.exit(1)
@@ -455,6 +563,28 @@ async function serverSet(values, metaPath) {
   await saveMeta(meta, metaPath)
 }
 
+async function resolveProviderSecrets(providers) {
+  const resolved = []
+  for (const provider of providers) {
+    const copy = JSON.parse(JSON.stringify(provider))
+    const challenge = copy.dns01_challenge
+    if (challenge) {
+      for (const [key, value] of Object.entries(challenge)) {
+        if (typeof value !== 'string' || !value.startsWith('@')) continue
+        const file = value.slice(1)
+        try {
+          challenge[key] = (await fs.readFile(file, 'utf-8')).trim()
+        } catch (error) {
+          sbtplErr(`cannot read dns option ${key} from ${file}: ${error.message}`)
+          process.exit(1)
+        }
+      }
+    }
+    resolved.push(copy)
+  }
+  return resolved
+}
+
 async function serverGen(metaPath, outputDir) {
   const meta = await loadMeta(metaPath)
   if (!meta.ip || !meta.protocols.length) {
@@ -473,11 +603,8 @@ async function serverGen(metaPath, outputDir) {
 
   const certificateProviders = meta.protocols
     .filter(entry => entry.type === 'trojan' && (entry.tlsMode || 'acme') === 'acme')
-    .map(entry => ({
-      type: 'acme',
-      tag: `${getProtocolTag(entry)}-acme`,
-      domain: [entry.domain],
-    }))
+    .map(entry => buildAcmeProvider(entry))
+  const jsonCertificateProviders = await resolveProviderSecrets(certificateProviders)
   // build server inbounds
   const inbounds = meta.protocols.map(entry => {
     const reg = PROTOCOL_REGISTRY[entry.type]
@@ -492,7 +619,7 @@ async function serverGen(metaPath, outputDir) {
     inbounds,
     outbounds: [{ type: 'direct', tag: 'direct' }],
   }
-  if (certificateProviders.length > 0) serverConfig.certificate_providers = certificateProviders
+  if (jsonCertificateProviders.length > 0) serverConfig.certificate_providers = jsonCertificateProviders
 
   // build client outbounds
   const clientOutboundTags = []
@@ -551,11 +678,7 @@ async function serverGen(metaPath, outputDir) {
   }
   const nixCertificateProviders = certificateProviders.length > 0
     ? `      certificate_providers = [
-${certificateProviders.map(provider => `        {
-          type = ${nixString(provider.type)};
-          tag = ${nixString(provider.tag)};
-          domain = [ ${provider.domain.map(nixString).join(' ')} ];
-        }`).join('\n')}
+${certificateProviders.map(provider => `        ${nixValue(provider, 8)}`).join('\n')}
       ];
 `
     : ''
@@ -597,8 +720,13 @@ ${nixCertificateProviders}    };
   // TLS certificate hints
   for (const entry of meta.protocols) {
     if (entry.type !== 'trojan') continue
-    if (entry.tlsMode === 'acme') {
-      console.log(`\n${YELLOW}[提示]${RESET} Trojan acme 模式: 请确保 ${BOLD}${entry.domain}${RESET} 已解析到本机且 80 端口可达，sing-box 启动时会自动申请证书`)
+    if ((entry.tlsMode || 'acme') === 'acme') {
+      const acmeDomains = getAcmeDomains(entry)
+      if (entry.dnsProvider) {
+        console.log(`\n${YELLOW}[提示]${RESET} Trojan acme 模式 (DNS-01/${entry.dnsProvider}): 将为 ${BOLD}${acmeDomains.join(', ')}${RESET} 申请证书，不需要开放 80/443`)
+      } else {
+        console.log(`\n${YELLOW}[提示]${RESET} Trojan acme 模式: 请确保 ${BOLD}${acmeDomains.join(', ')}${RESET} 已解析到本机且 80 端口可达，sing-box 启动时会自动申请证书`)
+      }
     } else if (entry.tlsMode === 'self-signed') {
       console.log(`\n${YELLOW}[提示]${RESET} Trojan self-signed 模式: 需手动生成证书:`)
       console.log(`  sing-box generate tls-keypair tls -m 456`)
@@ -713,6 +841,27 @@ async function interactiveAdd(rl, meta) {
       entry[field.name] = field.default
     } else if (field.required) {
       return renderStatus(`${field.prompt} 不能为空`, 'err')
+    }
+  }
+
+  if (protocol === 'trojan' && (entry.tlsMode || 'acme') === 'acme') {
+    const acmeAnswer = await ask(rl, `  证书域名 ${DIM}(逗号分隔，泛域名用 *.x.y，留空=${entry.domain || 'domain'})${RESET}: `)
+    if (acmeAnswer.trim()) entry.acmeDomains = acmeAnswer.trim()
+    const emailAnswer = await ask(rl, `  ACME 邮箱 ${DIM}(留空跳过)${RESET}: `)
+    if (emailAnswer.trim()) entry.acmeEmail = emailAnswer.trim()
+    const caAnswer = await ask(rl, `  ACME CA ${DIM}(留空=letsencrypt，可填 zerossl 或 URL)${RESET}: `)
+    if (caAnswer.trim()) entry.acmeCa = caAnswer.trim()
+    const dnsAnswer = await ask(rl, `  DNS-01 提供商 ${DIM}(cloudflare/alidns/acmedns，留空=HTTP-01)${RESET}: `)
+    if (dnsAnswer.trim()) {
+      entry.dnsProvider = dnsAnswer.trim()
+      const optionAnswer = await ask(rl, `  DNS 参数 ${DIM}(k=v,k=v，值写 @/path 表示从文件读取)${RESET}: `)
+      if (optionAnswer.trim()) {
+        try {
+          entry.dnsOptions = parseDnsOptions(optionAnswer.trim())
+        } catch (error) {
+          return renderStatus(error.message, 'err')
+        }
+      }
     }
   }
 
